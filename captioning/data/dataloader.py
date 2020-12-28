@@ -302,7 +302,7 @@ class Dataset(data.Dataset):
         return len(self.info['images'])
 
 class DataLoader:
-    def __init__(self, opt):
+    def __init__(self, opt, shuffle_override=None, wrap_override=None):
         self.opt = opt
         self.batch_size = self.opt.batch_size
         self.dataset = Dataset(opt)
@@ -310,10 +310,15 @@ class DataLoader:
         # Initialize loaders and iters
         self.loaders, self.iters = {}, {}
         for split in ['train', 'val', 'test']:
-            if split == 'train':
-                sampler = MySampler(self.dataset.split_ix[split], shuffle=True, wrap=True)
+            if shuffle_override is not None:
+                shuffle = shuffle_override
             else:
-                sampler = MySampler(self.dataset.split_ix[split], shuffle=False, wrap=False)
+                shuffle = split == 'train'
+            if wrap_override is not None:
+                wrap = wrap_override
+            else:
+                wrap = split == 'train'
+            sampler = MySampler(self.dataset.split_ix[split], shuffle=shuffle, wrap=wrap)
             self.loaders[split] = data.DataLoader(dataset=self.dataset,
                                                   batch_size=self.batch_size,
                                                   sampler=sampler,

@@ -11,6 +11,7 @@ import zlib
 import time
 import mmap
 import argparse
+import tqdm
 
 parser = argparse.ArgumentParser()
 
@@ -37,7 +38,7 @@ for infile in infiles:
     print('Reading ' + infile)
     with open(os.path.join(args.downloaded_feats, infile), "r") as tsv_in_file:
         reader = csv.DictReader(tsv_in_file, delimiter='\t', fieldnames = FIELDNAMES)
-        for item in reader:
+        for item in tqdm.tqdm(list(reader), ncols=80):
             item['image_id'] = int(item['image_id'])
             item['num_boxes'] = int(item['num_boxes'])
             for field in ['boxes', 'features']:
