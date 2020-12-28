@@ -255,9 +255,10 @@ def eval_split_n(model, n_predictions, input_data, eval_kwargs={}):
         with torch.no_grad():
             _seq, _sampleLogprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
         _sents = utils.decode_sequence(model.vocab, _seq)
-        _perplexity = - _sampleLogprobs.gather(2, _seq.unsqueeze(2)).squeeze(2).sum(1) / ((_seq>0).to(_sampleLogprobs).sum(1)+1)
+        _log_prob = _sampleLogprobs.gather(2, _seq.unsqueeze(2)).squeeze(2).sum(1)
+        _perplexity = - _log_prob / ((_seq>0).to(_sampleLogprobs).sum(1)+1)
         for k, sent in enumerate(_sents):
-            entry = {'image_id': data['infos'][k // sample_n]['id'], 'caption': sent, 'perplexity': _perplexity[k].item()}
+            entry = {'image_id': data['infos'][k // sample_n]['id'], 'seq': _seq[k], 'caption': sent, 'perplexity': _perplexity[k].item(), 'log_prob': _log_prob[k].item()}
             n_predictions.append(entry)
     elif sample_n_method == 'dbs':
         # Use diverse beam search
