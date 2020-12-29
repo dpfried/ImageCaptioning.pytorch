@@ -188,8 +188,11 @@ class CaptionModel(nn.Module):
                                 final_beam = {
                                     'seq': beam_seq_table[divm][b, vix].clone(), 
                                     'logps': beam_seq_logprobs_table[divm][b, vix].clone(),
+                                    # not sure what this would be used for: seems to be sum over even unused tokens
                                     'unaug_p': beam_seq_logprobs_table[divm][b, vix].sum().item(),
-                                    'p': beam_logprobs_sum_table[divm][b, vix].item()
+                                    'p': beam_logprobs_sum_table[divm][b, vix].item(),
+                                    # same as p but more descriptively named and we can backprop through it
+                                    'log_prob': beam_logprobs_sum_table[divm][b, vix].clone(),
                                 }
                                 final_beam['p'] = length_penalty(t-divm+1, final_beam['p'])
                                 done_beams_table[b][divm].append(final_beam)

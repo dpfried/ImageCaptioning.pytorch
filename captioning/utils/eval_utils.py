@@ -6,6 +6,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from torch.nn.utils.rnn import pad_sequence
+
 import numpy as np
 import json
 from json import encoder
@@ -243,9 +245,12 @@ def eval_split_n(model, n_predictions, input_data, eval_kwargs={}):
         with torch.no_grad():
             model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
         for k in range(fc_feats.shape[0]):
-            _sents = utils.decode_sequence(model.vocab, torch.stack([model.done_beams[k][_]['seq'] for _ in range(sample_n)]))
-            for sent in _sents:
-                entry = {'image_id': data['infos'][k]['id'], 'caption': sent}
+            beams = [model.done_beams[k][_]['seq'] for _ in range(sample_n)]
+            stacked_beams = pad_sequence(beams, batch_first=True, padding_value=0)
+            _log_prob = torch.stack([model.done_beams[k][i]['log_prob'] for i in range(sample_n)]).flatten()
+            _sents = utils.decode_sequence(model.vocab, stacked_beams)
+            for sent_ix, sent in enumerate(_sents):
+                entry = {'image_id': data['infos'][k]['id'], 'seq': stacked_beams[sent_ix], 'caption': sent, 'log_prob': _log_prob[sent_ix].item()}
                 n_predictions.append(entry)
     # case 2 sample / gumbel / topk sampling/ nucleus sampling
     elif sample_n_method == 'sample' or \
