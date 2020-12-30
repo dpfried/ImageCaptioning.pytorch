@@ -201,14 +201,19 @@ class AttModel(CaptionModel):
         n_captions = seq.size(0)
         n_images = fc_feats.size(0)
         assert att_feats.size(0) == n_images
-        assert att_masks.size(0) == n_images
+        if att_masks is not None:
+            assert att_masks.size(0) == n_images
         fc_feats_t = fc_feats.unsqueeze(0).repeat_interleave(n_captions, dim=0)
         att_feats_t = att_feats.unsqueeze(0).repeat_interleave(n_captions, dim=0)
-        att_masks_t = att_masks.unsqueeze(0).repeat_interleave(n_captions, dim=0)
 
         fc_feats_t = einops.rearrange(fc_feats_t, 'caps imgs d -> (caps imgs) d')
         att_feats_t = einops.rearrange(att_feats_t, 'caps imgs obj d -> (caps imgs) obj d')
-        att_masks_t = einops.rearrange(att_masks_t, 'caps imgs obj -> (caps imgs) obj')
+
+        if att_masks is not None:
+            att_masks_t = att_masks.unsqueeze(0).repeat_interleave(n_captions, dim=0)
+            att_masks_t = einops.rearrange(att_masks_t, 'caps imgs obj -> (caps imgs) obj')
+        else:
+            att_masks_t = None
         seq_t = seq.unsqueeze(1).repeat_interleave(n_images, dim=1)
         seq_t = einops.rearrange(seq_t, 'caps imgs d -> (caps imgs) d')
 

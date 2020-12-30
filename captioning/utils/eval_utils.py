@@ -169,7 +169,7 @@ def generate_pragmatic(model: AttModel, loader: DataLoader, fc_feats, att_feats,
         s0_scores = model.cross_product_scores(
             neighbor_batch['fc_feats'].to(device),
             neighbor_batch['att_feats'].to(device),
-            neighbor_batch['att_masks'].to(device),
+            neighbor_batch['att_masks'].to(device) if neighbor_batch['att_masks'] is not None else None,
             seqs[img_ix]
         )
         candidates_s.append(utils.decode_sequence(model.vocab, seqs[img_ix]))
