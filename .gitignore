@@ -6,3 +6,6 @@ models
 data
 __pycache__
 eval_results
+.idea/
+ImageCaptioning.pytorch.iml
+transfer_nlp.sh

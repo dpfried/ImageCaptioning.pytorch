@@ -23,6 +23,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from . import utils
 from torch.nn.utils.rnn import PackedSequence, pack_padded_sequence, pad_packed_sequence
+import einops
 
 from .CaptionModel import CaptionModel
 
@@ -161,6 +162,60 @@ class AttModel(CaptionModel):
             outputs[:, i] = output
 
         return outputs
+
+    def score_seqs(self, fc_feats, att_feats, att_masks, seq, add_bos=True):
+        """
+        Get the log-probabilities for producing each caption in seq from each image
+        :param fc_feats: resnet features. Tensor, batch x d_fc
+        :param att_feats: r-cnn features. Tensor, batch x obj x d_obj
+        :param att_masks: r-cnn feature mask. Tensor, batch x obj
+        :param seq: captions. Tensor, batch x t
+        :param add_bos: add BOS to the beginning of the captions (represented as padding)
+        :return: log probabilities for the captions. Tensor, batch:
+        """
+        if add_bos:
+            # padding represents BOS
+            seq = torch.cat([torch.zeros(seq.size(0), 1).long().to(seq), seq], 1)
+        with torch.no_grad():
+            scores = self(fc_feats, att_feats, seq, att_masks)
+        mask = (seq[:,:-1] > 0) | (seq[:,1:] > 0)
+        # TODO: does this include the EOS score?
+        # seq_t: words input at each position, with 0 for pad
+        # seq_t: 0, w_0, w_1, w_2, ..., w_k, 0, ...
+        # mask : 1, 1  , 1  , 1  , 1  , 1  , 0, ...
+        # selected_scores: w_0 + ... + w_k
+        #     return scores[:,:-1].gather(2, seq[:,1:].unsqueeze(2)).squeeze(2)
+        selected_scores = (scores[:,:-1].gather(2, seq[:,1:].unsqueeze(2)).squeeze(2) * mask)
+        return selected_scores.sum(1)
+
+    def cross_product_scores(self, fc_feats, att_feats, att_masks, seq, add_bos=True):
+        """
+        Get log-probabilities for all images crossed with all captions.
+        :param fc_feats: n_images x d_fc
+        :param att_feats: n_images x obj x d_obj
+        :param att_masks: n_images x obj
+        :param seq: n_captions x T
+        :param add_bos: add BOS to the beginning of captions
+        :return: n_captions x n_images
+        """
+        n_captions = seq.size(0)
+        n_images = fc_feats.size(0)
+        assert att_feats.size(0) == n_images
+        assert att_masks.size(0) == n_images
+        fc_feats_t = fc_feats.unsqueeze(0).repeat_interleave(n_captions, dim=0)
+        att_feats_t = att_feats.unsqueeze(0).repeat_interleave(n_captions, dim=0)
+        att_masks_t = att_masks.unsqueeze(0).repeat_interleave(n_captions, dim=0)
+
+        fc_feats_t = einops.rearrange(fc_feats_t, 'caps imgs d -> (caps imgs) d')
+        att_feats_t = einops.rearrange(att_feats_t, 'caps imgs obj d -> (caps imgs) obj d')
+        att_masks_t = einops.rearrange(att_masks_t, 'caps imgs obj -> (caps imgs) obj')
+        seq_t = seq.unsqueeze(1).repeat_interleave(n_images, dim=1)
+        seq_t = einops.rearrange(seq_t, 'caps imgs d -> (caps imgs) d')
+
+        seq_scores = self.score_seqs(fc_feats_t, att_feats_t, att_masks_t, seq_t, add_bos=add_bos)
+        seq_scores = einops.rearrange(seq_scores, '(caps imgs) -> caps imgs', caps=n_captions, imgs=n_images)
+        return seq_scores
+
 
     def get_logprobs_state(self, it, fc_feats, att_feats, p_att_feats, att_masks, state, output_logsoftmax=1):
         # 'it' contains a word index

@@ -8,11 +8,14 @@ import torch.nn as nn
 import numpy as np
 import torch.optim as optim
 import os
+import sys
+import subprocess
 
 import torch.nn.functional as F
 
 import six
 from six.moves import cPickle
+
 
 bad_endings = ['with','in','on','of','a','at','to','for','an','this','his','her','that']
 bad_endings += ['the']
@@ -248,3 +251,8 @@ def get_std_opt(model, optim_func='adam', factor=1, warmup=2000):
                       adamw=torch.optim.AdamW)[optim_func]
     return NoamOpt(model.d_model, factor, warmup,
             optim_func(model.parameters(), lr=0, betas=(0.9, 0.98), eps=1e-9))
+
+def dump_git_status(out_file=sys.stdout, exclude_file_patterns=['*.ipynb', '*.th', '*.sh', '*.txt', '*.json']):
+    subprocess.call('git rev-parse HEAD', shell=True, stdout=out_file)
+    exclude_string = ' '.join("':(exclude){}'".format(f) for f in exclude_file_patterns)
+    subprocess.call('git --no-pager diff -- . {}'.format(exclude_string), shell=True, stdout=out_file)

@@ -4,6 +4,7 @@ from __future__ import print_function
 
 import json
 import h5py
+import pickle
 from lmdbdict import lmdbdict
 from lmdbdict.methods import DUMPS_FUNC, LOADS_FUNC
 import os
@@ -11,12 +12,17 @@ import numpy as np
 import numpy.random as npr
 import random
 from functools import partial
+import tqdm
+
+from captioning.utils import misc as utils
 
 import torch
 import torch.utils.data as data
 
 import multiprocessing
 import six
+
+PAD_IX = 0
 
 class HybridLoader:
     """
@@ -301,14 +307,79 @@ class Dataset(data.Dataset):
     def __len__(self):
         return len(self.info['images'])
 
+class NearestNeighborIndex:
+    def __getstate__(self):
+        # don't pickle the index
+        state = self.__dict__.copy()
+        del state['index']
+        return state
+
+    def __setstate__(self, newstate):
+        # recreate the index from the other pickled attributes
+        self.__dict__.update(newstate)
+        self._init_index()
+
+    def _init_others(self, split, loader):
+        self.split = split
+        self.vocab = loader.dataset.get_vocab()
+
+        fc_features = []
+        self.loader_ixs = loader_ixs = []
+        self.ids = ids = []
+        self.file_paths = file_paths = []
+        self.captions = captions = []
+        loader.reset_iterator(split)
+        for batch_ix in tqdm.trange(len(loader.loaders[split]), ncols=80):
+            data = loader.get_batch(split)
+            infos = data['infos']
+            loader_ixs.extend(d['ix'] for d in infos)
+            ids.extend(d['id'] for d in infos)
+            file_paths.extend(d['file_path'] for d in infos)
+            fc_features.append(data['fc_feats'])
+            batch_captions = []
+            for batch_labels in data['labels']:
+                instance_captions = []
+                for img_labels in batch_labels:
+                    caption = [self.vocab[str(ix.item())] for ix in img_labels if ix != PAD_IX]
+                    instance_captions.append(caption)
+                batch_captions.append(instance_captions)
+            captions.extend(batch_captions)
+        self.fc_features = torch.cat(fc_features, 0).numpy()
+
+    def _init_index(self):
+        import faiss
+        index = faiss.IndexFlatL2(self.fc_features.shape[1])
+        index.add(self.fc_features)
+        self.index = index
+
+    def __init__(self, split, loader):
+        self._init_others(split, loader)
+        self._init_index()
+
+    def get_neighbor_batch(self, loader, img_fc_feat, k_neighbors, include_self=False, self_ix=None):
+        assert len(img_fc_feat.shape) == 1, "should be the features for a single image"
+        D, I = self.index.search(img_fc_feat[None], k_neighbors)
+        n_images, k_ = D.shape
+        assert n_images == 1
+        indices = []
+        if include_self:
+            assert self_ix is not None
+            indices.append(self_ix)
+        indices.extend([self.loader_ixs[i] for i in I.flatten()])
+        data = [loader.dataset[ix, 0, False] for ix in indices]
+        batch = loader.dataset.collate_func(data, self.split)
+        return batch
+
 class DataLoader:
-    def __init__(self, opt, shuffle_override=None, wrap_override=None):
+    def __init__(self, opt, shuffle_override=None, wrap_override=None,
+                 build_nearest_neighbor_indices_for_splits=None, index_serialization_root_path=None):
         self.opt = opt
         self.batch_size = self.opt.batch_size
         self.dataset = Dataset(opt)
 
         # Initialize loaders and iters
         self.loaders, self.iters = {}, {}
+        self.indices = {}
         for split in ['train', 'val', 'test']:
             if shuffle_override is not None:
                 shuffle = shuffle_override
@@ -323,10 +394,24 @@ class DataLoader:
                                                   batch_size=self.batch_size,
                                                   sampler=sampler,
                                                   pin_memory=True,
-                                                  num_workers=4, # 4 is usually enough
+                                                  num_workers=opt.num_workers, # 4 is usually enough
                                                   collate_fn=partial(self.dataset.collate_func, split=split),
                                                   drop_last=False)
             self.iters[split] = iter(self.loaders[split])
+
+            if build_nearest_neighbor_indices_for_splits and split in build_nearest_neighbor_indices_for_splits:
+                if index_serialization_root_path is not None:
+                    index_fname = os.path.join(index_serialization_root_path, f'{split}_index.pkl')
+                    if os.path.exists(index_fname):
+                        with open(index_fname, 'rb') as f:
+                            index = pickle.load(f)
+                    else:
+                        # TODO: make sure that the resulting iterator resetting doesn't cause an issue for training
+                        index = NearestNeighborIndex(split, self)
+                        os.makedirs(os.path.dirname(index_fname), exist_ok=True)
+                        with open(index_fname, 'wb') as f:
+                            pickle.dump(index, f)
+                self.indices[split] = index
 
     def get_batch(self, split):
         try:

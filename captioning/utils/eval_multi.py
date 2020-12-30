@@ -14,7 +14,7 @@ import time
 import os
 import sys
 from . import misc as utils
-from eval_utils import getCOCO
+from .eval_utils import getCOCO
 
 from .div_utils import compute_div_n, compute_global_div_n
 

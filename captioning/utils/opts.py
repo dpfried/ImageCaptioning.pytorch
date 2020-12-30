@@ -164,7 +164,6 @@ def parse_opt():
     parser.add_argument('--train_only', type=int, default=0,
                     help='if true then use 80k, else use 110k')
 
-
     # Reward
     parser.add_argument('--cider_reward_weight', type=float, default=1,
                     help='The reward weight from cider')
@@ -261,6 +260,10 @@ def parse_opt():
     return args
 
 
+def add_loader_options(parser):
+    parser.add_argument('--num_workers', type=int, default=4,
+                        help='number of pytorch workers (will have k + 1 total processes)')
+
 def add_eval_options(parser):
     # Basic options
     parser.add_argument('--batch_size', type=int, default=0,
@@ -302,10 +305,14 @@ def add_eval_options(parser):
     # misc
     parser.add_argument('--id', type=str, default='', 
                     help='an id identifying this run/job. used only if language_eval = 1 for appending to intermediate files')
-    parser.add_argument('--verbose_beam', type=int, default=1, 
+    parser.add_argument('--verbose', type=int, default=1,
+                        help='if we need to print out all beam search beams.')
+    parser.add_argument('--verbose_beam', type=int, default=1,
                     help='if we need to print out all beam search beams.')
     parser.add_argument('--verbose_loss', type=int, default=0, 
                     help='If calculate loss using ground truth during evaluation')
+    parser.add_argument('--verbose_captions', type=int, default=0,
+                        help='print candidate captions in evaluation')
 
 def add_diversity_opts(parser):
     parser.add_argument('--sample_n', type=int, default=1,
@@ -341,6 +348,16 @@ def add_eval_sample_opts(parser):
     parser.add_argument('--suppress_UNK', type=int, default=1,
                     help='Not predicting UNK')
 
+
+def add_pragmatics_opts(parser: argparse.ArgumentParser):
+    parser.add_argument('--index_serialization_root_path', default='data/cocobu_indices')
+    parser.add_argument('--pragmatic_inference', type=int, default=0,
+                        help='')
+    parser.add_argument('--pragmatic_distractors', type=int, default=5,
+                        help='number of distractor images to use (in addition to the target image)')
+    parser.add_argument('--pragmatic_distractor_split', choices=['train', 'val'], default='train')
+    parser.add_argument('--pragmatic_s0_weight', type=float, default=0.0,
+                        help='lambda in lambda * log p_s0 + (1 - lambda) * log p_s1')
 
 if __name__ == '__main__':
     import sys

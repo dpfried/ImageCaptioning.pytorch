@@ -5,6 +5,7 @@ from __future__ import print_function
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import einops
 
 from torch.nn.utils.rnn import pad_sequence
 
@@ -19,6 +20,9 @@ import sys
 from . import misc as utils
 
 # load coco-caption if available
+from ..data.dataloader import DataLoader
+from ..models import AttModel
+
 try:
     sys.path.append("coco-caption")
     from pycocotools.coco import COCO
@@ -30,6 +34,7 @@ except Exception as e:
 bad_endings = ['a','an','the','in','for','at','of','with','before','after','on','upon','near','to','is','are','am']
 bad_endings += ['the']
 
+PAD_ID = 0
 
 def count_bad(sen):
     sen = sen.split(' ')
@@ -128,8 +133,84 @@ def language_eval(dataset, preds, preds_n, eval_kwargs, split):
 
     return out
 
+def generate_pragmatic(model: AttModel, loader: DataLoader, fc_feats, att_feats, att_masks, data, eval_kwargs):
+    # generate candidate utterances
+    input_data = fc_feats, att_feats, att_masks, data
+    n_imgs = fc_feats.size(0)
+    n_predictions, seqs, log_probs = generate_caption_candidates(model, input_data, eval_kwargs)
+    # seqs: n_images x n_captions x T
+    # log_probs: n_images x n_captions
+    n_imgs_, n_captions = log_probs.size()
+    assert n_imgs == n_imgs_, (n_imgs, n_imgs_)
+    index = loader.indices[eval_kwargs['pragmatic_distractor_split']]
+    s0_weight = eval_kwargs['pragmatic_s0_weight']
+    if not (0.0 <= s0_weight <= 1.0):
+        raise ValueError(f"s0_weight {s0_weight} not in [0, 1]")
+    all_s0_scores_s = []
+    all_s1_scores_s = []
+    all_s0s1_scores_s = []
+    target_s0_scores_s = []
+    target_s1_scores_s = []
+    target_s0s1_scores_s = []
+    best_seqs = []
+    best_scores = []
+    device = fc_feats.device
+    image_context_paths_s = []
+    image_context_ids_s = []
+    candidates_s = []
+    for img_ix in range(n_imgs):
+        features = fc_feats[img_ix].cpu().numpy()
+        neighbor_batch = index.get_neighbor_batch(
+            loader, features, k_neighbors=eval_kwargs['pragmatic_distractors'],
+            include_self=True, self_ix=data['infos'][img_ix]['ix'],
+        )
+        # n_captions x (1 + pragmatic_distractors)
+        # [:,0]: scores for the captions for the target image
+        s0_scores = model.cross_product_scores(
+            neighbor_batch['fc_feats'].to(device),
+            neighbor_batch['att_feats'].to(device),
+            neighbor_batch['att_masks'].to(device),
+            seqs[img_ix]
+        )
+        candidates_s.append(utils.decode_sequence(model.vocab, seqs[img_ix]))
+        # n_captions
+        l1_scores = s0_scores.log_softmax(dim=1)
+        s1_scores = l1_scores.log_softmax(dim=0)
+        s0s1_scores = s0_scores * s0_weight + s1_scores * (1.0 - s0_weight)
+
+        target_s0s1_scores = s0s1_scores[:,0]
+
+        image_context_paths_s.append([d['file_path'] for d in neighbor_batch['infos']])
+        image_context_ids_s.append([d['id'] for d in neighbor_batch['infos']])
+
+        all_s0_scores_s.append(s0_scores.detach().cpu().numpy())
+        all_s1_scores_s.append(s1_scores.detach().cpu().numpy())
+        all_s0s1_scores_s.append(s0s1_scores.detach().cpu().numpy())
+        target_s0_scores_s.append(s0_scores[:,0].detach().cpu().numpy())
+        target_s1_scores_s.append(s1_scores[:,0].detach().cpu().numpy())
+        target_s0s1_scores_s.append(target_s0s1_scores.detach().cpu().numpy())
+
+        best_score, best_ix = target_s0s1_scores.max(-1)
+        best_scores.append(best_score)
+        best_seqs.append(seqs[img_ix][best_ix])
+    seq = pad_sequence(best_seqs, batch_first=True, padding_value=PAD_ID)
+    scores = torch.stack(best_scores, -1)
+    entropy = torch.zeros_like(scores)
+    perplexity = torch.zeros_like(scores)
+    extras = {
+        'target_s0_scores': target_s0_scores_s,
+        'target_s1_scores': target_s1_scores_s,
+        'target_s0s1_scores': target_s0s1_scores_s,
+        'chosen_target_s0s1_scores': scores.detach().cpu().numpy(),
+        'candidates': candidates_s,
+        'context_paths': image_context_paths_s,
+        'context_ids': image_context_ids_s,
+    }
+    return seq, entropy, perplexity, extras
+
 def eval_split(model, crit, loader, eval_kwargs={}):
     verbose = eval_kwargs.get('verbose', True)
+    verbose_captions = eval_kwargs.get('verbose_captions', 0)
     verbose_beam = eval_kwargs.get('verbose_beam', 0)
     verbose_loss = eval_kwargs.get('verbose_loss', 1)
     num_images = eval_kwargs.get('num_images', eval_kwargs.get('val_images_use', -1))
@@ -142,6 +223,8 @@ def eval_split(model, crit, loader, eval_kwargs={}):
     os.environ["REMOVE_BAD_ENDINGS"] = str(remove_bad_endings) # Use this nasty way to make other code clean since it's a global configuration
     device = eval_kwargs.get('device', 'cuda')
 
+    pragmatic_inference = eval_kwargs.get('pragmatic_inference', 0)
+
     # Make sure in the evaluation mode
     model.eval()
 
@@ -153,6 +236,7 @@ def eval_split(model, crit, loader, eval_kwargs={}):
     loss_evals = 1e-8
     predictions = []
     n_predictions = [] # when sample_n > 1
+    verbose_predictions = []
     while True:
         data = loader.get_batch(split)
         n = n + len(data['infos'])
@@ -167,14 +251,19 @@ def eval_split(model, crit, loader, eval_kwargs={}):
             loss_sum = loss_sum + loss
             loss_evals = loss_evals + 1
 
-        # forward the model to also get generated samples for each image
         with torch.no_grad():
             tmp_eval_kwargs = eval_kwargs.copy()
-            tmp_eval_kwargs.update({'sample_n': 1})
-            seq, seq_logprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
-            seq = seq.data
-            entropy = - (F.softmax(seq_logprobs, dim=2) * seq_logprobs).sum(2).sum(1) / ((seq>0).to(seq_logprobs).sum(1)+1)
-            perplexity = - seq_logprobs.gather(2, seq.unsqueeze(2)).squeeze(2).sum(1) / ((seq>0).to(seq_logprobs).sum(1)+1)
+            if pragmatic_inference:
+                seq, entropy, perplexity, extras = generate_pragmatic(model, loader, fc_feats, att_feats, att_masks, data, tmp_eval_kwargs)
+                seq = seq.data
+            else:
+                tmp_eval_kwargs.update({'sample_n': 1})
+                # forward the model to also get generated samples for each image
+                seq, seq_logprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
+                seq = seq.data
+                extras = {}
+                entropy = - (F.softmax(seq_logprobs, dim=2) * seq_logprobs).sum(2).sum(1) / ((seq>0).to(seq_logprobs).sum(1)+1)
+                perplexity = - seq_logprobs.gather(2, seq.unsqueeze(2)).squeeze(2).sum(1) / ((seq>0).to(seq_logprobs).sum(1)+1)
         
         # Print beam search
         if beam_size > 1 and verbose_beam:
@@ -187,14 +276,22 @@ def eval_split(model, crit, loader, eval_kwargs={}):
             entry = {'image_id': data['infos'][k]['id'], 'caption': sent, 'perplexity': perplexity[k].item(), 'entropy': entropy[k].item()}
             if eval_kwargs.get('dump_path', 0) == 1:
                 entry['file_name'] = data['infos'][k]['file_path']
+            if extras:
+                verbose_entry = entry.copy()
+                for key, value in extras.items():
+                    assert len(value) == len(sents)
+                    verbose_entry[key] = value[k]
+            else:
+                verbose_entry = entry
             predictions.append(entry)
+            verbose_predictions.append(verbose_entry)
             if eval_kwargs.get('dump_images', 0) == 1:
                 # dump the raw image to vis/ folder
                 cmd = 'cp "' + os.path.join(eval_kwargs['image_root'], data['infos'][k]['file_path']) + '" vis/imgs/img' + str(len(predictions)) + '.jpg' # bit gross
                 print(cmd)
                 os.system(cmd)
 
-            if verbose:
+            if verbose_captions:
                 print('image %s: %s' %(entry['image_id'], entry['caption']))
 
         if sample_n > 1:
@@ -210,7 +307,7 @@ def eval_split(model, crit, loader, eval_kwargs={}):
             predictions.pop()
 
         if verbose:
-            print('evaluating validation preformance... %d/%d (%f)' %(n, ix1, loss))
+            print('evaluating validation performance... %d/%d (%f)' %(n, ix1, loss))
 
         if num_images >= 0 and n >= num_images:
             break
@@ -221,6 +318,10 @@ def eval_split(model, crit, loader, eval_kwargs={}):
     if not os.path.isdir('eval_results'):
         os.mkdir('eval_results')
     torch.save((predictions, n_predictions), os.path.join('eval_results/', '.saved_pred_'+ eval_kwargs['id'] + '_' + split + '.pth'))
+    verbose_pred_fname = os.path.join('eval_results/', f"pred_verbose_{eval_kwargs['id']}_{split}.pth")
+    if eval_kwargs.get('save_verbose_predictions', 0):
+        print(f"saving verbose predictions to {verbose_pred_fname}")
+        torch.save(verbose_predictions, verbose_pred_fname)
     if lang_eval == 1:
         lang_stats = language_eval(dataset, predictions, n_predictions, eval_kwargs, split)
 
@@ -229,14 +330,21 @@ def eval_split(model, crit, loader, eval_kwargs={}):
     return loss_sum/loss_evals, predictions, lang_stats
 
 
-# Only run when sample_n > 0
 def eval_split_n(model, n_predictions, input_data, eval_kwargs={}):
-    verbose = eval_kwargs.get('verbose', True)
-    beam_size = eval_kwargs.get('beam_size', 1)
+    new_predictions, seqs, log_probs = generate_caption_candidates(model, input_data, eval_kwargs)
+    n_predictions.extend(new_predictions)
+
+# Only run when sample_n > 0
+def generate_caption_candidates(model, input_data, eval_kwargs={}):
+    n_predictions = []
+    verbose_captions = eval_kwargs.get('verbose_captions', 0)
+    # beam_size = eval_kwargs.get('beam_size', 1)
     sample_n = eval_kwargs.get('sample_n', 1)
     sample_n_method = eval_kwargs.get('sample_n_method', 'sample')
 
     fc_feats, att_feats, att_masks, data = input_data
+
+    n_imgs = fc_feats.size(0)
 
     tmp_eval_kwargs = eval_kwargs.copy()
     if sample_n_method == 'bs':
@@ -244,14 +352,20 @@ def eval_split_n(model, n_predictions, input_data, eval_kwargs={}):
         tmp_eval_kwargs.update({'sample_n': 1, 'beam_size': sample_n, 'group_size': 1}) # randomness from softmax
         with torch.no_grad():
             model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
+        seqs = []
+        log_probs = []
         for k in range(fc_feats.shape[0]):
             beams = [model.done_beams[k][_]['seq'] for _ in range(sample_n)]
             stacked_beams = pad_sequence(beams, batch_first=True, padding_value=0)
+            seqs.extend(beams)
             _log_prob = torch.stack([model.done_beams[k][i]['log_prob'] for i in range(sample_n)]).flatten()
+            log_probs.append(_log_prob)
             _sents = utils.decode_sequence(model.vocab, stacked_beams)
             for sent_ix, sent in enumerate(_sents):
-                entry = {'image_id': data['infos'][k]['id'], 'seq': stacked_beams[sent_ix], 'caption': sent, 'log_prob': _log_prob[sent_ix].item()}
+                entry = {'image_id': data['infos'][k]['id'], 'caption': sent, 'log_prob': _log_prob[sent_ix].item()}
                 n_predictions.append(entry)
+        seqs = pad_sequence(seqs, batch_first=True, padding_value=0)
+        log_probs = torch.cat(log_probs, 0)
     # case 2 sample / gumbel / topk sampling/ nucleus sampling
     elif sample_n_method == 'sample' or \
             sample_n_method == 'gumbel' or \
@@ -265,8 +379,11 @@ def eval_split_n(model, n_predictions, input_data, eval_kwargs={}):
         for k, sent in enumerate(_sents):
             entry = {'image_id': data['infos'][k // sample_n]['id'], 'seq': _seq[k], 'caption': sent, 'perplexity': _perplexity[k].item(), 'log_prob': _log_prob[k].item()}
             n_predictions.append(entry)
+        seqs = _seq
+        log_probs = _log_prob
     elif sample_n_method == 'dbs':
         # Use diverse beam search
+        raise NotImplementedError("set seqs to be the returned candidates (a batch_size*sample_n x T array) and log_probs to bbe log probabilities (batch_size*sample_n)")
         tmp_eval_kwargs.update({'beam_size': sample_n * beam_size, 'group_size': sample_n}) # randomness from softmax
         with torch.no_grad():
             model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
@@ -276,6 +393,7 @@ def eval_split_n(model, n_predictions, input_data, eval_kwargs={}):
                 entry = {'image_id': data['infos'][k]['id'], 'caption': sent}
                 n_predictions.append(entry)
     else:
+        raise NotImplementedError("set log_probs to bbe log probabilities (batch_size*sample_n)")
         tmp_eval_kwargs.update({'sample_method': sample_n_method[1:], 'group_size': sample_n, 'beam_size':1}) # randomness from softmax
         with torch.no_grad():
             _seq, _sampleLogprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
@@ -283,6 +401,10 @@ def eval_split_n(model, n_predictions, input_data, eval_kwargs={}):
         for k, sent in enumerate(_sents):
             entry = {'image_id': data['infos'][k // sample_n]['id'], 'caption': sent}
             n_predictions.append(entry)
-    if verbose:
+        seqs = _seq
+    if verbose_captions:
         for entry in sorted(n_predictions[-fc_feats.shape[0] * sample_n:], key=lambda x: x['image_id']):
             print('image %s: %s' %(entry['image_id'], entry['caption']))
+    seqs = einops.rearrange(seqs, "(n_imgs n_caps) T -> n_imgs n_caps T", n_imgs=n_imgs, n_caps=sample_n)
+    log_probs = einops.rearrange(log_probs, "(n_imgs n_caps) -> n_imgs n_caps", n_imgs=n_imgs, n_caps=sample_n)
+    return n_predictions, seqs, log_probs
