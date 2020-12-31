@@ -18,6 +18,8 @@ from .eval_utils import getCOCO
 
 from .div_utils import compute_div_n, compute_global_div_n
 
+SPICE_THREADS=4
+
 import sys
 try:
     sys.path.append("coco-caption")
@@ -85,7 +87,7 @@ def eval_oracle(dataset, preds_n, model_id, split):
         json.dump(preds, open(cache_path, 'w')) # serialize to temporary json file. Sigh, COCO API...
 
         cocoRes = coco.loadRes(cache_path)
-        cocoEval = COCOEvalCap(coco, cocoRes)
+        cocoEval = COCOEvalCap(coco, cocoRes, spice_threads=SPICE_THREADS)
         cocoEval.params['image_id'] = cocoRes.getImgIds()
         cocoEval.evaluate()
 

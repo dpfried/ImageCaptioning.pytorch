@@ -23,6 +23,8 @@ from . import misc as utils
 from ..data.dataloader import DataLoader
 from ..models import AttModel
 
+SPICE_THREADS=4
+
 try:
     sys.path.append("coco-caption")
     from pycocotools.coco import COCO
@@ -90,7 +92,8 @@ def language_eval(dataset, preds, preds_n, eval_kwargs, split):
     json.dump(preds_filt, open(cache_path, 'w')) # serialize to temporary json file. Sigh, COCO API...
 
     cocoRes = coco.loadRes(cache_path)
-    cocoEval = COCOEvalCap(coco, cocoRes)
+    cocoEval = COCOEvalCap(coco, cocoRes, spice_threads=SPICE_THREADS, 
+                           scorers_to_run=['bleu', 'meteor', 'rouge', 'cider', 'wmd'])
     cocoEval.params['image_id'] = cocoRes.getImgIds()
     cocoEval.evaluate()
 
@@ -101,30 +104,30 @@ def language_eval(dataset, preds, preds_n, eval_kwargs, split):
     out['entropy'] = mean_entropy
 
     imgToEval = cocoEval.imgToEval
-    for k in list(imgToEval.values())[0]['SPICE'].keys():
-        if k != 'All':
-            out['SPICE_'+k] = np.array([v['SPICE'][k]['f'] for v in imgToEval.values()])
-            out['SPICE_'+k] = (out['SPICE_'+k][out['SPICE_'+k]==out['SPICE_'+k]]).mean()
+    # for k in list(imgToEval.values())[0]['SPICE'].keys():
+    #     if k != 'All':
+    #         out['SPICE_'+k] = np.array([v['SPICE'][k]['f'] for v in imgToEval.values()])
+    #         out['SPICE_'+k] = (out['SPICE_'+k][out['SPICE_'+k]==out['SPICE_'+k]]).mean()
     for p in preds_filt:
         image_id, caption = p['image_id'], p['caption']
         imgToEval[image_id]['caption'] = caption
 
-    if len(preds_n) > 0:
-        from . import eval_multi
-        cache_path_n = os.path.join('eval_results/', '.cache_'+ model_id + '_' + split + '_n.json')
-        allspice = eval_multi.eval_allspice(dataset, preds_n, model_id, split)
-        out.update(allspice['overall'])
-        div_stats = eval_multi.eval_div_stats(dataset, preds_n, model_id, split)
-        out.update(div_stats['overall'])
-        if eval_oracle:
-            oracle = eval_multi.eval_oracle(dataset, preds_n, model_id, split)
-            out.update(oracle['overall'])
-        else:
-            oracle = None
-        self_cider = eval_multi.eval_self_cider(dataset, preds_n, model_id, split)
-        out.update(self_cider['overall'])
-        with open(cache_path_n, 'w') as outfile:
-            json.dump({'allspice': allspice, 'div_stats': div_stats, 'oracle': oracle, 'self_cider': self_cider}, outfile)
+    # if len(preds_n) > 0:
+    #     from . import eval_multi
+    #     cache_path_n = os.path.join('eval_results/', '.cache_'+ model_id + '_' + split + '_n.json')
+    #     allspice = eval_multi.eval_allspice(dataset, preds_n, model_id, split)
+    #     out.update(allspice['overall'])
+    #     div_stats = eval_multi.eval_div_stats(dataset, preds_n, model_id, split)
+    #     out.update(div_stats['overall'])
+    #     if eval_oracle:
+    #         oracle = eval_multi.eval_oracle(dataset, preds_n, model_id, split)
+    #         out.update(oracle['overall'])
+    #     else:
+    #         oracle = None
+    #     self_cider = eval_multi.eval_self_cider(dataset, preds_n, model_id, split)
+    #     out.update(self_cider['overall'])
+    #     with open(cache_path_n, 'w') as outfile:
+    #         json.dump({'allspice': allspice, 'div_stats': div_stats, 'oracle': oracle, 'self_cider': self_cider}, outfile)
         
     out['bad_count_rate'] = sum([count_bad(_['caption']) for _ in preds_filt]) / float(len(preds_filt))
     outfile_path = os.path.join('eval_results/', model_id + '_' + split + '.json')
@@ -135,6 +138,7 @@ def language_eval(dataset, preds, preds_n, eval_kwargs, split):
 
 def generate_pragmatic(model: AttModel, loader: DataLoader, fc_feats, att_feats, att_masks, data, eval_kwargs):
     # generate candidate utterances
+    keep_all_scores = eval_kwargs.get('pragmatic_serialize_all_scores', 0)
     input_data = fc_feats, att_feats, att_masks, data
     n_imgs = fc_feats.size(0)
     n_predictions, seqs, log_probs = generate_caption_candidates(model, input_data, eval_kwargs)
@@ -206,6 +210,12 @@ def generate_pragmatic(model: AttModel, loader: DataLoader, fc_feats, att_feats,
         'context_paths': image_context_paths_s,
         'context_ids': image_context_ids_s,
     }
+    if keep_all_scores:
+        extras.update({
+            'all_s0_scores': all_s0_scores_s,
+            'all_s1_scores': all_s1_scores_s,
+            'all_s0s1_scores': all_s0s1_scores_s,
+        })
     return seq, entropy, perplexity, extras
 
 def eval_split(model, crit, loader, eval_kwargs={}):

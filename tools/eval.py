@@ -138,7 +138,8 @@ if __name__ == "__main__":
     if lang_stats:
         pprint.pprint(lang_stats)
         print(','.join(stat_keys))
-        print(','.join('{:.4f}'.format(lang_stats[key]) for key in stat_keys))
+        print(','.join('{:.4f}'.format(lang_stats[key]) if key in lang_stats else '----' 
+                       for key in stat_keys ))
 
     if opt.dump_json == 1:
         # dump the json

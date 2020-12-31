@@ -358,6 +358,7 @@ def add_pragmatics_opts(parser: argparse.ArgumentParser):
     parser.add_argument('--pragmatic_distractor_split', choices=['train', 'val'], default='train')
     parser.add_argument('--pragmatic_s0_weight', type=float, default=0.0,
                         help='lambda in lambda * log p_s0 + (1 - lambda) * log p_s1')
+    parser.add_argument('--pragmatic_serialize_all_scores', type=int, default=0, help='')
 
 if __name__ == '__main__':
     import sys
