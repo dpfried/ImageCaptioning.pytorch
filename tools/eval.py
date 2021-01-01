@@ -38,6 +38,7 @@ if __name__ == "__main__":
                     help='force to evaluate no matter if there are results available')
     parser.add_argument('--device', type=str, default='cuda',
                     help='cpu or cuda')
+    parser.add_argument('--from_serialized_candidates')
     parser.add_argument('--save_verbose_predictions', type=int, default=0, help='write predictions to eval_results/pred_verbose_{id}_{split}.pth')
     opts.add_loader_options(parser)
     opts.add_eval_options(parser)
@@ -69,21 +70,43 @@ if __name__ == "__main__":
     pred_fn = os.path.join('eval_results/', '.saved_pred_'+ opt.id + '_' + opt.split + '.pth')
     result_fn = os.path.join('eval_results/', opt.id + '_' + opt.split + '.json')
 
-    if opt.only_lang_eval == 1 or (not opt.force and os.path.isfile(pred_fn)):
-        # if results existed, then skip, unless force is on
-        if not opt.force:
-            try:
-                if os.path.isfile(result_fn):
-                    print(result_fn)
-                    json.load(open(result_fn, 'r'))
-                    print('already evaluated')
-                    os._exit(0)
-            except:
-                pass
+    def print_lang_stats(lang_stats):
+        stat_keys = ['Bleu_1', 'Bleu_4', 'METEOR', 'ROUGE_L', 'CIDEr', 'SPICE']
+        if lang_stats:
+            pprint.pprint(lang_stats)
+            print(','.join(stat_keys))
+            print(','.join('{:.4f}'.format(lang_stats[key]) if key in lang_stats else '----'
+                           for key in stat_keys ))
 
-        predictions, n_predictions = torch.load(pred_fn)
+    def vis_predictions(split_predictions):
+        if opt.dump_json == 1:
+            # dump the json
+            json.dump(split_predictions, open('vis/vis.json', 'w'))
+
+    if opt.from_serialized_candidates or opt.only_lang_eval == 1 or (not opt.force and os.path.isfile(pred_fn)):
+        # if results existed, then skip, unless force is on
+        if opt.from_serialized_candidates:
+            predictions = eval_utils.eval_split_from_serialized(
+                opt.from_serialized_candidates, vars(opt)
+            )
+            n_predictions = []
+            print(f'saving to {pred_fn}')
+            torch.save((predictions, n_predictions), pred_fn)
+        else:
+            if not opt.force:
+                try:
+                    if os.path.isfile(result_fn):
+                        print(result_fn)
+                        json.load(open(result_fn, 'r'))
+                        print('already evaluated')
+                        os._exit(0)
+                except:
+                    pass
+
+            predictions, n_predictions = torch.load(pred_fn)
         lang_stats = eval_utils.language_eval(opt.input_json, predictions, n_predictions, vars(opt), opt.split)
-        print(lang_stats)
+        print_lang_stats(lang_stats)
+        vis_predictions(predictions)
         os._exit(0)
 
     # At this point only_lang_eval if 0
@@ -134,13 +157,6 @@ if __name__ == "__main__":
             vars(opt))
 
     print('loss: ', loss)
-    stat_keys = ['Bleu_1', 'Bleu_4', 'METEOR', 'ROUGE_L', 'CIDEr', 'SPICE']
-    if lang_stats:
-        pprint.pprint(lang_stats)
-        print(','.join(stat_keys))
-        print(','.join('{:.4f}'.format(lang_stats[key]) if key in lang_stats else '----' 
-                       for key in stat_keys ))
+    print_lang_stats(lang_stats)
+    vis_predictions(split_predictions)
 
-    if opt.dump_json == 1:
-        # dump the json
-        json.dump(split_predictions, open('vis/vis.json', 'w'))

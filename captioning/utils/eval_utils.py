@@ -9,6 +9,7 @@ import einops
 
 from torch.nn.utils.rnn import pad_sequence
 
+import itertools
 import numpy as np
 import json
 from json import encoder
@@ -218,6 +219,63 @@ def generate_pragmatic(model: AttModel, loader: DataLoader, fc_feats, att_feats,
         })
     return seq, entropy, perplexity, extras
 
+def search_distractors(s0_cap_by_img_score_mat, num_distractors_to_choose, s0_weight):
+    if not (0.0 <= s0_weight <= 1.0):
+        raise ValueError(f"s0_weight {s0_weight} must be in [0, 1]")
+    n_cap, n_img = s0_cap_by_img_score_mat.size()
+    best_distractors = None
+    best_score = None
+    best_cap = None
+    for distractors in itertools.combinations(range(1, n_img), num_distractors_to_choose):
+        img_indices = list(itertools.chain((0,), distractors))
+        sub_mat = s0_cap_by_img_score_mat[:,img_indices]
+        l1 = sub_mat.log_softmax(1)
+        s1 = l1.log_softmax(0)
+        target_s0_scores = s0_cap_by_img_score_mat[:,0]
+        target_s1_scores = s1[:,0]
+        target_s0s1_scores = s0_weight * target_s0_scores + (1 - s0_weight) * target_s1_scores
+        this_best_score, this_best_cap = target_s0s1_scores.max(-1)
+        if best_score is None or this_best_score > best_score:
+            best_distractors = distractors
+            best_score = this_best_score
+            best_cap = this_best_cap
+    return best_cap, best_distractors, best_score
+
+def choose_from_candidates(instance_candidates: dict, eval_kwargs):
+    # instance_candidates: candidate captions and scores for a single image
+    prediction = {}
+    for key in ['image_id', 'candidates', 'perplexity', 'entropy']:
+        prediction[key] = instance_candidates[key]
+    candidate_captions = instance_candidates['candidates']
+    nonempty_indices, nonempty_captions = zip(*[(ix, cap) for ix, cap in enumerate(candidate_captions) if cap])
+    nonempty_indices = torch.tensor(nonempty_indices).long()
+    if eval_kwargs['pragmatic_inference']:
+        num_distractors = eval_kwargs['pragmatic_distractors']
+        s0_weight = eval_kwargs['pragmatic_s0_weight']
+        # n_captions x n_images
+
+        # target image has index 0; indices 1-end are for distractor images
+        s0_scores = torch.tensor(instance_candidates['all_s0_scores'])
+        if num_distractors >= s0_scores.size(1):
+            raise ValueError(f"not enough distractors in serialized candidates. {num_distractors} required; {s0_scores.size(1) - 1} available")
+        else:
+            s0_scores = s0_scores[:,:num_distractors+1]
+        s0_scores = s0_scores[nonempty_indices]
+        best_cap, best_distractors, best_scores = search_distractors(s0_scores, num_distractors, s0_weight)
+
+        caption = nonempty_captions[best_cap]
+    else:
+        raise NotImplementedError()
+    prediction['caption'] = caption
+    return prediction
+
+def eval_split_from_serialized(path, eval_kwargs={}):
+    candidates = torch.load(path)
+    predictions = []
+    for instance_candidates in candidates:
+        predictions.append(choose_from_candidates(instance_candidates, eval_kwargs))
+    return predictions
+
 def eval_split(model, crit, loader, eval_kwargs={}):
     verbose = eval_kwargs.get('verbose', True)
     verbose_captions = eval_kwargs.get('verbose_captions', 0)
@@ -327,7 +385,9 @@ def eval_split(model, crit, loader, eval_kwargs={}):
         n_predictions = sorted(n_predictions, key=lambda x: x['perplexity'])
     if not os.path.isdir('eval_results'):
         os.mkdir('eval_results')
-    torch.save((predictions, n_predictions), os.path.join('eval_results/', '.saved_pred_'+ eval_kwargs['id'] + '_' + split + '.pth'))
+    pred_fn = os.path.join('eval_results/', '.saved_pred_'+ eval_kwargs['id'] + '_' + split + '.pth')
+    print(f'saving to {pred_fn}')
+    torch.save((predictions, n_predictions), pred_fn)
     verbose_pred_fname = os.path.join('eval_results/', f"pred_verbose_{eval_kwargs['id']}_{split}.pth")
     if eval_kwargs.get('save_verbose_predictions', 0):
         print(f"saving verbose predictions to {verbose_pred_fname}")

@@ -14,7 +14,11 @@ n_distractors=$4
 if [ -z $n_distractors ]
 then
 	n_distractors=5
+else
+  shift
 fi
+
+shift 3;
 
 distractor_split="train"
 
