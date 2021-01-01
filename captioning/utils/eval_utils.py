@@ -10,6 +10,7 @@ import einops
 from torch.nn.utils.rnn import pad_sequence
 
 import itertools
+import tqdm
 import numpy as np
 import json
 from json import encoder
@@ -242,6 +243,7 @@ def search_distractors(s0_cap_by_img_score_mat, num_distractors_to_choose, s0_we
     return best_cap, best_distractors, best_score
 
 def choose_from_candidates(instance_candidates: dict, eval_kwargs):
+    device = eval_kwargs.get('device', 'cuda')
     # instance_candidates: candidate captions and scores for a single image
     prediction = {}
     for key in ['image_id', 'candidates', 'perplexity', 'entropy']:
@@ -261,7 +263,16 @@ def choose_from_candidates(instance_candidates: dict, eval_kwargs):
         else:
             s0_scores = s0_scores[:,:num_distractors+1]
         s0_scores = s0_scores[nonempty_indices]
-        best_cap, best_distractors, best_scores = search_distractors(s0_scores, num_distractors, s0_weight)
+        s0_scores = s0_scores.to(device)
+        distractor_type = eval_kwargs.get('pragmatic_distractor_type', 'closest')
+        if distractor_type == 'closest':
+            # use all distractors
+            num_to_choose = num_distractors
+        elif distractor_type == 'choose_within_closest':
+            num_to_choose = eval_kwargs.get('pragmatic_distractors_to_choose', 1)
+        else:
+            raise NotImplementedError(f"invalid --pragmatic_distractor_type {distractor_type}")
+        best_cap, best_distractors, best_scores = search_distractors(s0_scores, num_to_choose, s0_weight)
 
         caption = nonempty_captions[best_cap]
     else:
@@ -272,7 +283,7 @@ def choose_from_candidates(instance_candidates: dict, eval_kwargs):
 def eval_split_from_serialized(path, eval_kwargs={}):
     candidates = torch.load(path)
     predictions = []
-    for instance_candidates in candidates:
+    for instance_candidates in tqdm.tqdm(candidates, ncols=80):
         predictions.append(choose_from_candidates(instance_candidates, eval_kwargs))
     return predictions
 
