@@ -242,16 +242,17 @@ def search_distractors(s0_cap_by_img_score_mat, num_distractors_to_choose, s0_we
             best_cap = this_best_cap
     return best_cap, best_distractors, best_score
 
-def choose_from_candidates(instance_candidates: dict, eval_kwargs):
+def pragmatic_choose_from_candidates(instance_candidates: dict, eval_kwargs):
     device = eval_kwargs.get('device', 'cuda')
     # instance_candidates: candidate captions and scores for a single image
     prediction = {}
-    for key in ['image_id', 'candidates', 'perplexity', 'entropy']:
+    for key in ['image_id', 'candidates', 'perplexity', 'entropy', 'context_paths', 'context_ids']:
         prediction[key] = instance_candidates[key]
     candidate_captions = instance_candidates['candidates']
     nonempty_indices, nonempty_captions = zip(*[(ix, cap) for ix, cap in enumerate(candidate_captions) if cap])
     nonempty_indices = torch.tensor(nonempty_indices).long()
     if eval_kwargs['pragmatic_inference']:
+        assert not eval_kwargs['mbr_inference']
         num_distractors = eval_kwargs['pragmatic_distractors']
         s0_weight = eval_kwargs['pragmatic_s0_weight']
         # n_captions x n_images
@@ -280,11 +281,62 @@ def choose_from_candidates(instance_candidates: dict, eval_kwargs):
     prediction['caption'] = caption
     return prediction
 
+def mbr_choose_from_candidates(instance_candidates: dict, eval_kwargs, sent_rep_model, sent_rep_tokenizer):
+    device = eval_kwargs.get('device', 'cuda')
+    mbr_type = eval_kwargs.get('mbr_type', 'bert_cosine_sim')
+    if mbr_type != 'bert_cosine_sim':
+        raise NotImplementedError(f"--mbr_type: {mbr_type}")
+    s0_weight = eval_kwargs['mbr_s0_weight']
+    if not (0.0 <= s0_weight <= 1.0):
+        raise ValueError(f"--mbr_s0_weight {s0_weight} must be in [0, 1]")
+
+    prediction = {}
+    for key in ['image_id', 'candidates', 'perplexity', 'entropy', 'context_paths', 'context_ids']:
+        prediction[key] = instance_candidates[key]
+    candidate_captions = instance_candidates['candidates']
+    nonempty_indices, nonempty_captions = zip(*[(ix, cap) for ix, cap in enumerate(candidate_captions) if cap])
+    nonempty_captions = list(nonempty_captions)
+    nonempty_indices = torch.tensor(nonempty_indices).long()
+
+    s0_scores = torch.tensor(instance_candidates['target_s0_scores'])
+    s0_scores = s0_scores[nonempty_indices]
+    inputs = sent_rep_tokenizer(nonempty_captions, return_tensors='pt', padding=True)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    outputs = sent_rep_model(**inputs)
+    h = outputs['last_hidden_state'][:,0]
+    h_rescaled = h / h.norm(2, dim=-1, keepdim=True)
+    cosine_sim = torch.einsum("xh,yh->xy", (h_rescaled, h_rescaled))
+    mbr_scores = cosine_sim.mean(-1).log_softmax(-1)
+    mbr_scores = mbr_scores.to(s0_scores.device)
+    joint_scores = s0_weight * s0_scores + (1 - s0_weight) * mbr_scores
+    best_score, best_cap = joint_scores.max(-1)
+    caption = nonempty_captions[best_cap]
+    prediction['caption'] = caption
+    return prediction
+
+
 def eval_split_from_serialized(path, eval_kwargs={}):
+    device = eval_kwargs.get('device', 'cuda')
+    pragmatic_inference = eval_kwargs.get('pragmatic_inference', 0)
+    mbr_inference = eval_kwargs.get('mbr_inference', 0)
+
+    if mbr_inference and pragmatic_inference:
+        raise ValueError("can't do both --pragmatic_inference and --mbr_inference")
+
+    if mbr_inference:
+        from transformers import AutoTokenizer, AutoModel
+        tokenizer = AutoTokenizer.from_pretrained("bert-large-uncased")
+        model = AutoModel.from_pretrained("bert-large-uncased")
+        model = model.to(device)
+
     candidates = torch.load(path)
     predictions = []
     for instance_candidates in tqdm.tqdm(candidates, ncols=80):
-        predictions.append(choose_from_candidates(instance_candidates, eval_kwargs))
+        if mbr_inference:
+            prediction = mbr_choose_from_candidates(instance_candidates, eval_kwargs, model, tokenizer)
+        else:
+            prediction = pragmatic_choose_from_candidates(instance_candidates, eval_kwargs)
+        predictions.append(prediction)
     return predictions
 
 def eval_split(model, crit, loader, eval_kwargs={}):

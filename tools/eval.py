@@ -44,6 +44,7 @@ if __name__ == "__main__":
     opts.add_eval_options(parser)
     opts.add_diversity_opts(parser)
     opts.add_pragmatics_opts(parser)
+    opts.add_mbr_opts(parser)
     opt = parser.parse_args()
 
     print(' '.join(sys.argv))

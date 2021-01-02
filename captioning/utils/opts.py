@@ -362,6 +362,11 @@ def add_pragmatics_opts(parser: argparse.ArgumentParser):
     parser.add_argument('--pragmatic_distractor_type', choices=['closest', 'choose_within_closest'], default='closest')
     parser.add_argument('--pragmatic_distractors_to_choose', type=int, default=1)
 
+def add_mbr_opts(parser: argparse.ArgumentParser):
+    parser.add_argument('--mbr_inference', type=int, default=0, help='')
+    parser.add_argument('--mbr_type', choices=['bert_cosine_sim'], default='bert_cosine_sim')
+    parser.add_argument('--mbr_s0_weight', type=float, default=0.0)
+
 if __name__ == '__main__':
     import sys
     sys.argv = [sys.argv[0]]
