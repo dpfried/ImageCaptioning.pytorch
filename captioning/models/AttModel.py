@@ -26,6 +26,7 @@ from torch.nn.utils.rnn import PackedSequence, pack_padded_sequence, pad_packed_
 import einops
 
 from .CaptionModel import CaptionModel
+from ..data.dataloader import NearestNeighborIndex
 
 bad_endings = ['a','an','the','in','for','at','of','with','before','after','on','upon','near','to','is','are','am']
 bad_endings += ['the']
@@ -314,7 +315,90 @@ class AttModel(CaptionModel):
         # return the samples and their log likelihoods
         return seq, seqLogprobs
 
-    def _sample(self, fc_feats, att_feats, att_masks=None, opt={}):
+    def _sample_contrastive_beam(
+        self, fc_feats, att_feats, att_masks=None, opt={}, data=None, nearest_neighbor_index=None, loader=None,
+    ):
+        assert nearest_neighbor_index is not None
+        beam_size = opt.get('beam_size', 10)
+        sample_n = opt.get('sample_n', 10)
+        # when sample_n == beam_size then each beam is a sample.
+        assert sample_n == 1 or sample_n == beam_size, 'when beam search, sample_n == 1 or beam search'
+        batch_size = fc_feats.size(0)
+        device = fc_feats.device
+
+        num_distractors = opt['pragmatic_distractors']
+        per_image_dim = num_distractors + 1
+
+        neighbor_batch = nearest_neighbor_index.get_neighbor_batch(
+            loader, fc_feats.cpu().numpy(), k_neighbors=opt['pragmatic_distractors'],
+            include_self=True, self_indices=[data['infos'][img_ix]['ix'] for img_ix in range(batch_size)],
+        )
+
+        # assert torch.allclose(neighbor_batch['fc_feats'][:,0].cpu(), fc_feats.cpu())
+        # neighbor_batch['fc_feats']: batch_size x k_neighbors+1 x d
+
+        def combine_first_two(tensor):
+            return tensor.view((tensor.size(0) * tensor.size(1),) + tensor.size()[2:])
+
+        def flat_view(tensor):
+            if tensor is None:
+                return None
+            assert tensor.size(0) == batch_size
+            assert tensor.size(1) == per_image_dim
+            return combine_first_two(tensor)
+
+        def unflat_view(tensor):
+            if tensor is None:
+                return None
+            assert tensor.size(0) == batch_size * per_image_dim
+            return tensor.view((batch_size, per_image_dim) + tensor.size()[1:])
+
+        # p_fc_feats, p_att_feats, pp_att_feats, p_att_masks = self._prepare_feature(fc_feats, att_feats, att_masks)
+        # p_fc_feats_a, p_att_feats_a, pp_att_feats_a, p_att_masks_a =
+        prepped_feats = self._prepare_feature(
+            flat_view(neighbor_batch['fc_feats'].to(device)),
+            flat_view(neighbor_batch['att_feats'].to(device)),
+            flat_view(neighbor_batch['att_masks'].to(device)) if neighbor_batch['att_masks'] is not None else None,
+        )
+
+        assert beam_size <= self.vocab_size + 1, 'lets assume this for now, otherwise this corner case causes a few headaches down the road. can be dealt with in future if needed'
+        seq = fc_feats.new_full((batch_size*sample_n, self.seq_length), self.pad_idx, dtype=torch.long)
+        seqLogprobs = fc_feats.new_zeros(batch_size*sample_n, self.seq_length, self.vocab_size + 1)
+        # lets process every image independently for now, for simplicity
+
+        self.done_beams = [[] for _ in range(batch_size)]
+
+        state = self.init_hidden(batch_size*per_image_dim)
+
+        # first step, feed bos
+        it = fc_feats.new_full([batch_size*per_image_dim], self.bos_idx, dtype=torch.long)
+        # batch_size*per_image_dim x V
+        logprobs, state = self.get_logprobs_state(it, *(prepped_feats + (state,)))
+        # logprobs, state = self.get_logprobs_state(it, p_fc_feats_a, p_att_feats_a, pp_att_feats_a, p_att_masks_a, state)
+
+        # (batch_size*beam_size) x per_image_view x ...
+        repeated_feats = (combine_first_two(ten) for ten in utils.repeat_tensors(
+            beam_size,
+            [unflat_view(t) for t in prepped_feats]
+            # [p_fc_feats_a, p_att_feats_a, pp_att_feats_a, p_att_masks_a]
+        ))
+        self.done_beams = self.contrastive_beam_search(
+            state, logprobs, *repeated_feats, opt=opt
+        )
+        for k in range(batch_size):
+            if sample_n == beam_size:
+                for _n in range(sample_n):
+                    seq_len = self.done_beams[k][_n]['seq'].shape[0]
+                    seq[k*sample_n+_n, :seq_len] = self.done_beams[k][_n]['seq']
+                    seqLogprobs[k*sample_n+_n, :seq_len] = self.done_beams[k][_n]['logps']
+            else:
+                seq_len = self.done_beams[k][0]['seq'].shape[0]
+                seq[k, :seq_len] = self.done_beams[k][0]['seq'] # the first beam has highest cumulative score
+                seqLogprobs[k, :seq_len] = self.done_beams[k][0]['logps']
+        # return the samples and their log likelihoods
+        return seq, seqLogprobs
+
+    def _sample(self, fc_feats, att_feats, att_masks=None, opt={}, data=None, nearest_neighbor_index=None, loader=None):
 
         sample_method = opt.get('sample_method', 'greedy')
         beam_size = opt.get('beam_size', 1)
@@ -327,6 +411,11 @@ class AttModel(CaptionModel):
         remove_bad_endings = opt.get('remove_bad_endings', 0)
         if beam_size > 1 and sample_method in ['greedy', 'beam_search']:
             return self._sample_beam(fc_feats, att_feats, att_masks, opt)
+        if sample_method in ['contrastive_beam_search']:
+            return self._sample_contrastive_beam(
+                fc_feats, att_feats, att_masks, opt,
+                data=data, nearest_neighbor_index=nearest_neighbor_index, loader=loader,
+            )
         if group_size > 1:
             return self._diverse_sample(fc_feats, att_feats, att_masks, opt)
 

@@ -17,6 +17,91 @@ from torch.autograd import *
 from ..utils import misc as utils
 from . import utils as model_utils
 
+import einops
+
+# does one step of classical beam search
+def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprobs, beam_logprobs_sum, state, log_l1=None):
+    #INPUTS:
+    #N: batch size
+    #b: beam size
+    #T: num timesteps
+    #V: vocab size
+    #logprobs: probabilities augmented after diversity N*bxV
+    #beam_size: obvious
+    #t        : time instant
+    #beam_seq : tensor contanining the beams. N x b x T
+    #beam_seq_logprobs: tensor contanining the beam logprobs. batch x beam x T x V
+    #beam_logprobs_sum: tensor contanining joint logprobs
+    # log_l1: N x (num_distractors+1) x b x V
+    #OUPUTS:
+    #beam_seq : tensor containing the word indices of the decoded captions Nxbxl
+    #beam_seq_logprobs : log-probability of each decision made, NxbxlxV
+    #beam_logprobs_sum : joint log-probability of each beam Nxb
+
+    batch_size = beam_logprobs_sum.shape[0]
+    vocab_size = logprobs.shape[-1]
+    logprobs = logprobs.reshape(batch_size, -1, vocab_size) # NxbxV
+    if t == 0:
+        assert logprobs.shape[1] == 1
+        beam_logprobs_sum = beam_logprobs_sum[:, :1]
+    candidate_logprobs = beam_logprobs_sum.unsqueeze(-1) + logprobs # beam_logprobs_sum Nxb logprobs is NxbxV
+    ys, ix = torch.sort(candidate_logprobs.reshape(candidate_logprobs.shape[0], -1), -1, True)
+    ys, ix = ys[:,:beam_size], ix[:,:beam_size]
+    beam_ix = ix // vocab_size # Nxb which beam
+    selected_ix = ix % vocab_size # Nxb # which world
+    state_ix = (beam_ix + torch.arange(batch_size).type_as(beam_ix).unsqueeze(-1) * logprobs.shape[1]).reshape(-1) # N*b which in Nxb beams
+
+    if t > 0:
+        # gather according to beam_ix
+        assert (beam_seq.gather(1, beam_ix.unsqueeze(-1).expand_as(beam_seq)) == beam_seq.reshape(-1, beam_seq.shape[-1])[state_ix].view_as(beam_seq)).all()
+        beam_seq = beam_seq.gather(1, beam_ix.unsqueeze(-1).expand_as(beam_seq))
+
+        beam_seq_logprobs = beam_seq_logprobs.gather(1, beam_ix.unsqueeze(-1).unsqueeze(-1).expand_as(beam_seq_logprobs))
+
+    if log_l1 is not None:
+        per_image_dim = log_l1.size(1)
+        log_l1_reshape = einops.rearrange(
+            log_l1,
+            "batch_size per_image_dim beam_size v -> (batch_size per_image_dim) (beam_size v)"
+        )
+        ix_repeated = einops.rearrange(
+            ix.unsqueeze(1).expand(-1, per_image_dim, -1),
+            "batch_size per_image_dim beam_size -> (batch_size per_image_dim) beam_size"
+        )
+        new_priors = einops.rearrange(
+            log_l1_reshape.gather(-1, ix_repeated),
+            "(batch_size per_image_dim) beam_size -> batch_size per_image_dim beam_size",
+            batch_size=batch_size, per_image_dim=per_image_dim
+        )
+        assert new_priors.size() == log_l1.size()[:-1]
+        if t > 0:
+            for n in range(batch_size):
+                for b in range(beam_size):
+                    bix = beam_ix[n,b]
+                    six = selected_ix[n,b]
+                    assert torch.allclose(new_priors[n,b,:], log_l1[n,bix,:,six])
+
+    beam_seq = torch.cat([beam_seq, selected_ix.unsqueeze(-1)], -1) # beam_seq Nxbxl
+    beam_logprobs_sum = beam_logprobs_sum.gather(1, beam_ix) + \
+                        logprobs.reshape(batch_size, -1).gather(1, ix)
+    assert (beam_logprobs_sum == ys).all()
+    _tmp_beam_logprobs = unaug_logprobs[state_ix].reshape(batch_size, -1, vocab_size)
+    beam_logprobs = unaug_logprobs.reshape(batch_size, -1, vocab_size).gather(1, beam_ix.unsqueeze(-1).expand(-1, -1, vocab_size)) # NxbxV
+    assert (_tmp_beam_logprobs == beam_logprobs).all()
+    beam_seq_logprobs = torch.cat([
+        beam_seq_logprobs,
+        beam_logprobs.reshape(batch_size, -1, 1, vocab_size)], 2)
+
+    new_state = [None for _ in state]
+    for _ix in range(len(new_state)):
+        #  copy over state in previous beam q to new beam at vix
+        new_state[_ix] = state[_ix][:, state_ix]
+    state = new_state
+    if log_l1 is not None:
+        # log_priors: batch_size x per_image_dim x beam_size
+        return beam_seq,beam_seq_logprobs,beam_logprobs_sum,state,new_priors
+    else:
+        return beam_seq,beam_seq_logprobs,beam_logprobs_sum,state
 
 class CaptionModel(nn.Module):
     def __init__(self):
@@ -54,60 +139,6 @@ class CaptionModel(nn.Module):
 
             return logprobs, unaug_logprobs
 
-
-        # does one step of classical beam search
-
-        def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprobs, beam_logprobs_sum, state):
-            #INPUTS:
-            #logprobs: probabilities augmented after diversity N*bxV
-            #beam_size: obvious
-            #t        : time instant
-            #beam_seq : tensor contanining the beams
-            #beam_seq_logprobs: tensor contanining the beam logprobs
-            #beam_logprobs_sum: tensor contanining joint logprobs
-            #OUPUTS:
-            #beam_seq : tensor containing the word indices of the decoded captions Nxbxl
-            #beam_seq_logprobs : log-probability of each decision made, NxbxlxV
-            #beam_logprobs_sum : joint log-probability of each beam Nxb
-
-            batch_size = beam_logprobs_sum.shape[0]
-            vocab_size = logprobs.shape[-1]
-            logprobs = logprobs.reshape(batch_size, -1, vocab_size) # NxbxV
-            if t == 0:
-                assert logprobs.shape[1] == 1
-                beam_logprobs_sum = beam_logprobs_sum[:, :1]
-            candidate_logprobs = beam_logprobs_sum.unsqueeze(-1) + logprobs # beam_logprobs_sum Nxb logprobs is NxbxV
-            ys, ix = torch.sort(candidate_logprobs.reshape(candidate_logprobs.shape[0], -1), -1, True)
-            ys, ix = ys[:,:beam_size], ix[:,:beam_size]
-            beam_ix = ix // vocab_size # Nxb which beam
-            selected_ix = ix % vocab_size # Nxb # which world
-            state_ix = (beam_ix + torch.arange(batch_size).type_as(beam_ix).unsqueeze(-1) * logprobs.shape[1]).reshape(-1) # N*b which in Nxb beams
-
-
-            if t > 0:
-                # gather according to beam_ix
-                assert (beam_seq.gather(1, beam_ix.unsqueeze(-1).expand_as(beam_seq)) == beam_seq.reshape(-1, beam_seq.shape[-1])[state_ix].view_as(beam_seq)).all()
-                beam_seq = beam_seq.gather(1, beam_ix.unsqueeze(-1).expand_as(beam_seq))
-                
-                beam_seq_logprobs = beam_seq_logprobs.gather(1, beam_ix.unsqueeze(-1).unsqueeze(-1).expand_as(beam_seq_logprobs))
-            
-            beam_seq = torch.cat([beam_seq, selected_ix.unsqueeze(-1)], -1) # beam_seq Nxbxl
-            beam_logprobs_sum = beam_logprobs_sum.gather(1, beam_ix) + \
-                logprobs.reshape(batch_size, -1).gather(1, ix)
-            assert (beam_logprobs_sum == ys).all()
-            _tmp_beam_logprobs = unaug_logprobs[state_ix].reshape(batch_size, -1, vocab_size)
-            beam_logprobs = unaug_logprobs.reshape(batch_size, -1, vocab_size).gather(1, beam_ix.unsqueeze(-1).expand(-1, -1, vocab_size)) # NxbxV
-            assert (_tmp_beam_logprobs == beam_logprobs).all()
-            beam_seq_logprobs = torch.cat([
-                beam_seq_logprobs,
-                beam_logprobs.reshape(batch_size, -1, 1, vocab_size)], 2)
-            
-            new_state = [None for _ in state]
-            for _ix in range(len(new_state)):
-            #  copy over state in previous beam q to new beam at vix
-                new_state[_ix] = state[_ix][:, state_ix]
-            state = new_state
-            return beam_seq,beam_seq_logprobs,beam_logprobs_sum,state
 
         # Start diverse_beam_search
         opt = kwargs['opt']
@@ -207,6 +238,165 @@ class CaptionModel(nn.Module):
         # all beams are sorted by their log-probabilities
         done_beams_table = [[sorted(done_beams_table[b][i], key=lambda x: -x['p'])[:bdash] for i in range(group_size)] for b in range(batch_size)]
         done_beams = [sum(_, []) for _ in done_beams_table]
+        return done_beams
+
+    def contrastive_beam_search(self, init_state, init_logprobs, *args, **kwargs):
+        # init_logprobs: batch_size*(num_distractors+1) x (vocab_size+1)
+        # args: each tensor is (batch_size*beam_size) x per_image_view x ...
+
+        # state: tuple of tensors (2 x batch_size*beam_size*per_image_view x d)
+        # init_state: (2 x batch_size*1*per_image_view x d) [beam_size initially like 0; call this "this_beam_size" later]
+
+        # does one step of classical beam search
+
+        # Start diverse_beam_search
+        opt = kwargs['opt']
+        temperature = opt.get('temperature', 1) # This should not affect beam search, but will affect dbs
+        beam_size = opt.get('beam_size', 10)
+        diversity_lambda = opt.get('diversity_lambda', 0.5)
+        decoding_constraint = opt.get('decoding_constraint', 0)
+        remove_bad_endings = opt.get('remove_bad_endings', 0)
+        suppress_UNK = opt.get('suppress_UNK', 0)
+        length_penalty = utils.penalty_builder(opt.get('length_penalty', ''))
+
+        num_distractors = opt['pragmatic_distractors']
+
+        alpha = opt['pragmatic_incremental_alpha']
+
+        per_image_dim = (num_distractors+1)
+        batch_size = init_logprobs.shape[0] // per_image_dim
+        assert args[0].size(0) == batch_size * per_image_dim * beam_size
+
+        V = init_logprobs.size(-1)
+
+        device = init_logprobs.device
+
+        # INITIALIZATIONS
+        beam_seq_table = torch.LongTensor(batch_size, beam_size, 0).to(device)
+        beam_seq_logprobs_table = torch.FloatTensor(batch_size, beam_size, 0, self.vocab_size + 1).to(device)
+        beam_logprobs_sum_table = torch.zeros(batch_size, beam_size).to(device)
+
+        log_priors = torch.full((batch_size, per_image_dim, beam_size), 1.0 / per_image_dim).log().to(device)
+
+        # logprobs # logprobs predicted in last time step, shape (beam_size*per_image_dim, vocab_size+1)
+        done_beams_table = [[] for _ in range(batch_size)]
+        state_table = [_.clone() for _ in init_state]
+        # logprobs_table = list(init_logprobs.reshape(batch_size * bdash, group_size, -1).chunk(group_size, 0))
+        logprobs_table = init_logprobs.clone()
+        # END INIT
+
+        # Chunk elements in the args
+        args = list(args)
+        if self.__class__.__name__ == 'AttEnsemble':
+            raise NotImplementedError()
+
+        for t in range(self.seq_length):
+            # logprobs: batch_size*(beam_size if t > 0 else 1) x V
+            logprobs = logprobs_table
+            if t == 0:
+                assert logprobs.size() == (batch_size*per_image_dim, V)
+                log_s0 = logprobs.view(batch_size, per_image_dim, 1, V).expand(batch_size, per_image_dim, beam_size,  V)
+                this_beam_size = 1
+            else:
+                assert logprobs.size() == (batch_size*per_image_dim*beam_size, V)
+                log_s0 = logprobs.view(batch_size, per_image_dim, beam_size, V)
+                this_beam_size = beam_size
+            # add vocab dimension. batch_size x per_image_dim x beam_size x V
+            log_priors_expanded = log_priors.unsqueeze(-1).expand_as(log_s0)
+            log_l0 = (log_s0 + log_priors_expanded).log_softmax(1)
+            log_s1 = (log_s0 + (log_l0 * alpha)).log_softmax(3)
+
+            # TODO: should this use s1?
+            # batch_size x per_image_dim x beam_size x V
+            log_l1 = (log_l0 + log_s0).log_softmax(1)
+
+            logprobs = log_s1[:,0]
+            if t == 0:
+                assert torch.allclose(logprobs[:,0], logprobs[:,1])
+                logprobs = logprobs[:,0]
+            logprobs = logprobs.contiguous().view(-1, V)
+
+            # suppress previous word
+            if decoding_constraint and t > 0:
+                raise NotImplementedError()
+                # logprobs.scatter_(1, beam_seq_table[:, :, t-1].reshape(-1, 1).to(device), float('-inf'))
+            if remove_bad_endings and t > 0:
+                raise NotImplementedError()
+                # logprobs[torch.from_numpy(np.isin(beam_seq_table[:, :, t-1].cpu().numpy(), self.bad_endings_ix)).reshape(-1), 0] = float('-inf')
+            # suppress UNK tokens in the decoding
+            if suppress_UNK and hasattr(self, 'vocab') and self.vocab[str(logprobs.size(1)-1)] == 'UNK':
+                logprobs[:,logprobs.size(1)-1] = logprobs[:, logprobs.size(1)-1] - 1000
+                # diversity is added here
+            # the function directly modifies the logprobs values and hence, we need to return
+            # the unaugmented ones for sorting the candidates in the end. # for historical
+            # reasons :-)
+            unaug_logprobs = logprobs.clone()
+
+            state_table_rearranged = tuple(
+                einops.rearrange(
+                    t, "x (batch_size this_beam_size per_image_dim) d -> x (batch_size this_beam_size) per_image_dim d",
+                    batch_size=batch_size,
+                    per_image_dim=per_image_dim,
+                    this_beam_size=this_beam_size
+                )
+                for t in state_table
+            )
+
+            # infer new beams
+            beam_seq_table, \
+            beam_seq_logprobs_table, \
+            beam_logprobs_sum_table, \
+            state_table_rearranged, \
+            log_priors = beam_step(logprobs,
+                                    unaug_logprobs,
+                                    beam_size,
+                                    t,
+                                    beam_seq_table,
+                                    beam_seq_logprobs_table,
+                                    beam_logprobs_sum_table,
+                                    state_table_rearranged, log_l1=log_l1)
+            # don't use this_beam_size because in t0 the beam expands to the full beam_size (from 1)
+            state_table = tuple(
+                einops.rearrange(
+                    t, "x (batch_size beam_size) per_image_dim d -> x (batch_size beam_size per_image_dim) d",
+                    batch_size=batch_size,
+                    beam_size=beam_size,
+                )
+                for t in state_table_rearranged
+            )
+
+            # if time's up... or if end token is reached then copy beams
+            for b in range(batch_size):
+                is_end = beam_seq_table[b, :, t] == self.eos_idx
+                assert beam_seq_table.shape[-1] == t+1
+                if t == self.seq_length - 1:
+                    is_end.fill_(1)
+                for vix in range(beam_size):
+                    if is_end[vix]:
+                        final_beam = {
+                            'seq': beam_seq_table[b, vix].clone(),
+                            'logps': beam_seq_logprobs_table[b, vix].clone(),
+                            # not sure what this would be used for: seems to be sum over even unused tokens
+                            'unaug_p': beam_seq_logprobs_table[b, vix].sum().item(),
+                            'p': beam_logprobs_sum_table[b, vix].item(),
+                            # same as p but more descriptively named and we can backprop through it
+                            'log_prob': beam_logprobs_sum_table[b, vix].clone(),
+                        }
+                        final_beam['p'] = length_penalty(t+1, final_beam['p'])
+                        done_beams_table[b].append(final_beam)
+                beam_logprobs_sum_table[b, is_end] -= 1000
+
+            # move the current group one step forward in time
+
+            it = beam_seq_table[:, :, t]
+            it = it.unsqueeze(2).expand(-1, -1, per_image_dim)
+            it = it.reshape(-1).to(logprobs.device)
+            logprobs_table, state_table = self.get_logprobs_state(it, *(args + [state_table]))
+            logprobs_table = F.log_softmax(logprobs_table / temperature, dim=-1)
+
+        # all beams are sorted by their log-probabilities
+        done_beams = [sorted(done_beams_table[b], key=lambda x: -x['p'])[:beam_size] for b in range(batch_size)]
+        print("contrastive")
         return done_beams
 
     def old_beam_search(self, init_state, init_logprobs, *args, **kwargs):

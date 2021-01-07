@@ -143,12 +143,15 @@ def generate_pragmatic(model: AttModel, loader: DataLoader, fc_feats, att_feats,
     keep_all_scores = eval_kwargs.get('pragmatic_serialize_all_scores', 0)
     input_data = fc_feats, att_feats, att_masks, data
     n_imgs = fc_feats.size(0)
-    n_predictions, seqs, log_probs = generate_caption_candidates(model, input_data, eval_kwargs)
+    nearest_neighbor_index = loader.indices[eval_kwargs['pragmatic_distractor_split']]
+    n_predictions, seqs, log_probs = generate_caption_candidates(
+        model, input_data, eval_kwargs, nearest_neighbor_index=nearest_neighbor_index,
+        loader=loader,
+    )
     # seqs: n_images x n_captions x T
     # log_probs: n_images x n_captions
     n_imgs_, n_captions = log_probs.size()
     assert n_imgs == n_imgs_, (n_imgs, n_imgs_)
-    index = loader.indices[eval_kwargs['pragmatic_distractor_split']]
     s0_weight = eval_kwargs['pragmatic_s0_weight']
     if not (0.0 <= s0_weight <= 1.0):
         raise ValueError(f"s0_weight {s0_weight} not in [0, 1]")
@@ -164,18 +167,20 @@ def generate_pragmatic(model: AttModel, loader: DataLoader, fc_feats, att_feats,
     image_context_paths_s = []
     image_context_ids_s = []
     candidates_s = []
+    k_neighbors = eval_kwargs['pragmatic_distractors']
+    all_neighbors = nearest_neighbor_index.get_neighbor_batch(
+        loader, fc_feats.cpu().numpy(), k_neighbors=k_neighbors,
+        include_self=True, self_indices=[data['infos'][img_ix]['ix'] for img_ix in range(n_imgs)]
+    )
     for img_ix in range(n_imgs):
-        features = fc_feats[img_ix].cpu().numpy()
-        neighbor_batch = index.get_neighbor_batch(
-            loader, features, k_neighbors=eval_kwargs['pragmatic_distractors'],
-            include_self=True, self_ix=data['infos'][img_ix]['ix'],
-        )
+        neighbor_infos = all_neighbors['infos'][img_ix*(k_neighbors+1):(img_ix+1)*(k_neighbors+1)]
+        assert len(neighbor_infos) == k_neighbors+1
         # n_captions x (1 + pragmatic_distractors)
         # [:,0]: scores for the captions for the target image
         s0_scores = model.cross_product_scores(
-            neighbor_batch['fc_feats'].to(device),
-            neighbor_batch['att_feats'].to(device),
-            neighbor_batch['att_masks'].to(device) if neighbor_batch['att_masks'] is not None else None,
+            all_neighbors['fc_feats'][img_ix].to(device),
+            all_neighbors['att_feats'][img_ix].to(device),
+            all_neighbors['att_masks'][img_ix].to(device) if all_neighbors['att_masks'] is not None else None,
             seqs[img_ix]
         )
         candidates_s.append(utils.decode_sequence(model.vocab, seqs[img_ix]))
@@ -186,8 +191,8 @@ def generate_pragmatic(model: AttModel, loader: DataLoader, fc_feats, att_feats,
 
         target_s0s1_scores = s0s1_scores[:,0]
 
-        image_context_paths_s.append([d['file_path'] for d in neighbor_batch['infos']])
-        image_context_ids_s.append([d['id'] for d in neighbor_batch['infos']])
+        image_context_paths_s.append([d['file_path'] for d in neighbor_infos])
+        image_context_ids_s.append([d['id'] for d in neighbor_infos])
 
         all_s0_scores_s.append(s0_scores.detach().cpu().numpy())
         all_s1_scores_s.append(s1_scores.detach().cpu().numpy())
@@ -426,7 +431,7 @@ def eval_split(model, crit, loader, eval_kwargs={}):
                 print('image %s: %s' %(entry['image_id'], entry['caption']))
 
         if sample_n > 1:
-            eval_split_n(model, n_predictions, [fc_feats, att_feats, att_masks, data], eval_kwargs)
+            eval_split_n(model, n_predictions, [fc_feats, att_feats, att_masks, data], eval_kwargs, loader=loader)
         
         # ix0 = data['bounds']['it_pos_now']
         ix1 = data['bounds']['it_max']
@@ -463,12 +468,12 @@ def eval_split(model, crit, loader, eval_kwargs={}):
     return loss_sum/loss_evals, predictions, lang_stats
 
 
-def eval_split_n(model, n_predictions, input_data, eval_kwargs={}):
-    new_predictions, seqs, log_probs = generate_caption_candidates(model, input_data, eval_kwargs)
+def eval_split_n(model, n_predictions, input_data, eval_kwargs={}, loader=None):
+    new_predictions, seqs, log_probs = generate_caption_candidates(model, input_data, eval_kwargs, loader=loader)
     n_predictions.extend(new_predictions)
 
 # Only run when sample_n > 0
-def generate_caption_candidates(model, input_data, eval_kwargs={}):
+def generate_caption_candidates(model, input_data, eval_kwargs={}, nearest_neighbor_index=None, loader=None):
     n_predictions = []
     verbose_captions = eval_kwargs.get('verbose_captions', 0)
     # beam_size = eval_kwargs.get('beam_size', 1)
@@ -480,11 +485,18 @@ def generate_caption_candidates(model, input_data, eval_kwargs={}):
     n_imgs = fc_feats.size(0)
 
     tmp_eval_kwargs = eval_kwargs.copy()
-    if sample_n_method == 'bs':
+    if sample_n_method in ['bs', 'contrastive_bs']:
         # case 1 sample_n == beam size
+        contrastive = sample_n_method == 'contrastive_bs'
+        if contrastive:
+            tmp_eval_kwargs['sample_method'] = 'contrastive_beam_search'
         tmp_eval_kwargs.update({'sample_n': 1, 'beam_size': sample_n, 'group_size': 1}) # randomness from softmax
         with torch.no_grad():
-            model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
+            if contrastive:
+                model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs,
+                      mode='sample', nearest_neighbor_index=nearest_neighbor_index, data=data, loader=loader)
+            else:
+                model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
         seqs = []
         log_probs = []
         for k in range(fc_feats.shape[0]):
@@ -525,7 +537,7 @@ def generate_caption_candidates(model, input_data, eval_kwargs={}):
             for sent in _sents:
                 entry = {'image_id': data['infos'][k]['id'], 'caption': sent}
                 n_predictions.append(entry)
-    else:
+    elif sample_n_method in ['dgreedy', 'dsample', 'dtopk', 'dtopp']:
         raise NotImplementedError("set log_probs to bbe log probabilities (batch_size*sample_n)")
         tmp_eval_kwargs.update({'sample_method': sample_n_method[1:], 'group_size': sample_n, 'beam_size':1}) # randomness from softmax
         with torch.no_grad():
@@ -535,6 +547,8 @@ def generate_caption_candidates(model, input_data, eval_kwargs={}):
             entry = {'image_id': data['infos'][k // sample_n]['id'], 'caption': sent}
             n_predictions.append(entry)
         seqs = _seq
+    else:
+        raise ValueError(f"invalid sample_n_method {sample_n_method}")
     if verbose_captions:
         for entry in sorted(n_predictions[-fc_feats.shape[0] * sample_n:], key=lambda x: x['image_id']):
             print('image %s: %s' %(entry['image_id'], entry['caption']))

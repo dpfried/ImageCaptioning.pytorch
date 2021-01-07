@@ -13,7 +13,6 @@ def repeat_tensors(n, x):
         x = [repeat_tensors(n, _) for _ in x]
     return x
 
-
 def split_tensors(n, x):
     if torch.is_tensor(x):
         assert x.shape[0] % n == 0
@@ -22,4 +21,14 @@ def split_tensors(n, x):
         x = [split_tensors(n, _) for _ in x]
     elif x is None:
         x = [None] * n
+    return x
+
+def split_tensors_no_transpose_no_unbind(first_dim, x):
+    if torch.is_tensor(x):
+        assert x.shape[0] % first_dim == 0
+        x = x.reshape(first_dim, x.shape[0] // first_dim, *x.shape[1:])
+    elif type(x) is list or type(x) is tuple:
+        x = [split_tensors_no_transpose_no_unbind(first_dim, _) for _ in x]
+    elif x is None:
+        x = [None] * first_dim
     return x

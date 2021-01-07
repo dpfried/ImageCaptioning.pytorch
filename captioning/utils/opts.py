@@ -361,6 +361,7 @@ def add_pragmatics_opts(parser: argparse.ArgumentParser):
     parser.add_argument('--pragmatic_serialize_all_scores', type=int, default=0, help='')
     parser.add_argument('--pragmatic_distractor_type', choices=['closest', 'choose_within_closest'], default='closest')
     parser.add_argument('--pragmatic_distractors_to_choose', type=int, default=1)
+    parser.add_argument('--pragmatic_incremental_alpha', type=float, default=1.0)
 
 def add_mbr_opts(parser: argparse.ArgumentParser):
     parser.add_argument('--mbr_inference', type=int, default=0, help='')
