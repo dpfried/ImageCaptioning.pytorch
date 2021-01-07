@@ -73,13 +73,12 @@ def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprob
             "(batch_size per_image_dim) beam_size -> batch_size per_image_dim beam_size",
             batch_size=batch_size, per_image_dim=per_image_dim
         )
-        assert new_priors.size() == log_l1.size()[:-1]
-        if t > 0:
-            for n in range(batch_size):
-                for b in range(beam_size):
-                    bix = beam_ix[n,b]
-                    six = selected_ix[n,b]
-                    assert torch.allclose(new_priors[n,b,:], log_l1[n,bix,:,six])
+        # assert new_priors.size() == log_l1.size()[:-1]
+        # for n in range(batch_size):
+        #     for b in range(beam_size):
+        #         bix = beam_ix[n,b]
+        #         six = selected_ix[n,b]
+        #         assert torch.allclose(new_priors[n,:,b], log_l1[n,:,bix,six])
 
     beam_seq = torch.cat([beam_seq, selected_ix.unsqueeze(-1)], -1) # beam_seq Nxbxl
     beam_logprobs_sum = beam_logprobs_sum.gather(1, beam_ix) + \

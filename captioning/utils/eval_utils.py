@@ -145,8 +145,7 @@ def generate_pragmatic(model: AttModel, loader: DataLoader, fc_feats, att_feats,
     n_imgs = fc_feats.size(0)
     nearest_neighbor_index = loader.indices[eval_kwargs['pragmatic_distractor_split']]
     n_predictions, seqs, log_probs = generate_caption_candidates(
-        model, input_data, eval_kwargs, nearest_neighbor_index=nearest_neighbor_index,
-        loader=loader,
+        model, input_data, eval_kwargs, loader=loader,
     )
     # seqs: n_images x n_captions x T
     # log_probs: n_images x n_captions
@@ -473,7 +472,7 @@ def eval_split_n(model, n_predictions, input_data, eval_kwargs={}, loader=None):
     n_predictions.extend(new_predictions)
 
 # Only run when sample_n > 0
-def generate_caption_candidates(model, input_data, eval_kwargs={}, nearest_neighbor_index=None, loader=None):
+def generate_caption_candidates(model, input_data, eval_kwargs={}, loader=None):
     n_predictions = []
     verbose_captions = eval_kwargs.get('verbose_captions', 0)
     # beam_size = eval_kwargs.get('beam_size', 1)
@@ -493,6 +492,7 @@ def generate_caption_candidates(model, input_data, eval_kwargs={}, nearest_neigh
         tmp_eval_kwargs.update({'sample_n': 1, 'beam_size': sample_n, 'group_size': 1}) # randomness from softmax
         with torch.no_grad():
             if contrastive:
+                nearest_neighbor_index = loader.indices[eval_kwargs['pragmatic_distractor_split']]
                 model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs,
                       mode='sample', nearest_neighbor_index=nearest_neighbor_index, data=data, loader=loader)
             else:
