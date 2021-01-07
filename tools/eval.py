@@ -135,7 +135,8 @@ if __name__ == "__main__":
 
     # Create the Data Loader instance
     if len(opt.image_folder) == 0:
-        if opt.pragmatic_inference:
+        # sample_method and sample_n_method take different specifications of contrastive_beam_search
+        if opt.pragmatic_inference or opt.sample_method == 'contrastive_beam_search' or opt.sample_n_method == 'contrastive_bs':
             loader = DataLoader(opt,
                                 build_nearest_neighbor_indices_for_splits=['train'],
                                 index_serialization_root_path=opt.index_serialization_root_path)

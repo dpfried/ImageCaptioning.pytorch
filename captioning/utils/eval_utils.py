@@ -143,7 +143,6 @@ def generate_pragmatic(model: AttModel, loader: DataLoader, fc_feats, att_feats,
     keep_all_scores = eval_kwargs.get('pragmatic_serialize_all_scores', 0)
     input_data = fc_feats, att_feats, att_masks, data
     n_imgs = fc_feats.size(0)
-    nearest_neighbor_index = loader.indices[eval_kwargs['pragmatic_distractor_split']]
     n_predictions, seqs, log_probs = generate_caption_candidates(
         model, input_data, eval_kwargs, loader=loader,
     )
@@ -394,7 +393,8 @@ def eval_split(model, crit, loader, eval_kwargs={}):
             else:
                 tmp_eval_kwargs.update({'sample_n': 1})
                 # forward the model to also get generated samples for each image
-                seq, seq_logprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
+                seq, seq_logprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample',
+                                          loader=loader, data=data)
                 seq = seq.data
                 extras = {}
                 entropy = - (F.softmax(seq_logprobs, dim=2) * seq_logprobs).sum(2).sum(1) / ((seq>0).to(seq_logprobs).sum(1)+1)
@@ -491,12 +491,7 @@ def generate_caption_candidates(model, input_data, eval_kwargs={}, loader=None):
             tmp_eval_kwargs['sample_method'] = 'contrastive_beam_search'
         tmp_eval_kwargs.update({'sample_n': 1, 'beam_size': sample_n, 'group_size': 1}) # randomness from softmax
         with torch.no_grad():
-            if contrastive:
-                nearest_neighbor_index = loader.indices[eval_kwargs['pragmatic_distractor_split']]
-                model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs,
-                      mode='sample', nearest_neighbor_index=nearest_neighbor_index, data=data, loader=loader)
-            else:
-                model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
+            model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample', data=data, loader=loader)
         seqs = []
         log_probs = []
         for k in range(fc_feats.shape[0]):
@@ -517,7 +512,8 @@ def generate_caption_candidates(model, input_data, eval_kwargs={}, loader=None):
             sample_n_method.startswith('top'):
         tmp_eval_kwargs.update({'sample_n': sample_n, 'sample_method': sample_n_method, 'beam_size': 1}) # randomness from sample
         with torch.no_grad():
-            _seq, _sampleLogprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
+            _seq, _sampleLogprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample',
+                                          loader=loader, data=data)
         _sents = utils.decode_sequence(model.vocab, _seq)
         _log_prob = _sampleLogprobs.gather(2, _seq.unsqueeze(2)).squeeze(2).sum(1)
         _perplexity = - _log_prob / ((_seq>0).to(_sampleLogprobs).sum(1)+1)
@@ -531,7 +527,7 @@ def generate_caption_candidates(model, input_data, eval_kwargs={}, loader=None):
         raise NotImplementedError("set seqs to be the returned candidates (a batch_size*sample_n x T array) and log_probs to bbe log probabilities (batch_size*sample_n)")
         tmp_eval_kwargs.update({'beam_size': sample_n * beam_size, 'group_size': sample_n}) # randomness from softmax
         with torch.no_grad():
-            model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
+            model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample', loader=loader, data=data)
         for k in range(loader.batch_size):
             _sents = utils.decode_sequence(model.vocab, torch.stack([model.done_beams[k][_]['seq'] for _ in range(0, sample_n*beam_size, beam_size)]))
             for sent in _sents:
@@ -541,7 +537,8 @@ def generate_caption_candidates(model, input_data, eval_kwargs={}, loader=None):
         raise NotImplementedError("set log_probs to bbe log probabilities (batch_size*sample_n)")
         tmp_eval_kwargs.update({'sample_method': sample_n_method[1:], 'group_size': sample_n, 'beam_size':1}) # randomness from softmax
         with torch.no_grad():
-            _seq, _sampleLogprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample')
+            _seq, _sampleLogprobs = model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample',
+                                          loader=loader, data=data)
         _sents = utils.decode_sequence(model.vocab, _seq)
         for k, sent in enumerate(_sents):
             entry = {'image_id': data['infos'][k // sample_n]['id'], 'caption': sent}

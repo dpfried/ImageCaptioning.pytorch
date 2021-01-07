@@ -398,7 +398,7 @@ class AttModel(CaptionModel):
         # return the samples and their log likelihoods
         return seq, seqLogprobs
 
-    def _sample(self, fc_feats, att_feats, att_masks=None, opt={}, data=None, nearest_neighbor_index=None, loader=None):
+    def _sample(self, fc_feats, att_feats, att_masks=None, opt={}, data=None, loader=None):
 
         sample_method = opt.get('sample_method', 'greedy')
         beam_size = opt.get('beam_size', 1)
@@ -412,6 +412,7 @@ class AttModel(CaptionModel):
         if beam_size > 1 and sample_method in ['greedy', 'beam_search']:
             return self._sample_beam(fc_feats, att_feats, att_masks, opt)
         if sample_method in ['contrastive_beam_search']:
+            nearest_neighbor_index = loader.indices[opt['pragmatic_distractor_split']]
             return self._sample_contrastive_beam(
                 fc_feats, att_feats, att_masks, opt,
                 data=data, nearest_neighbor_index=nearest_neighbor_index, loader=loader,
