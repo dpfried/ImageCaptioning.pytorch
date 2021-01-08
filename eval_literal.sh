@@ -5,7 +5,7 @@ model_dir="models/updown"
 split=$1
 beam_size=$2
 
-id="literal_${split}_bs-${beam_size}"
+id="literal_${split}_bs-${beam_size}_dl-0.0"
 
 python -u tools/eval.py \
 	--id $id \
@@ -20,4 +20,5 @@ python -u tools/eval.py \
   --infos_path ${model_dir}/infos_tds-best.pkl \
   --language_eval 1 \
   --beam_size $beam_size \
+  --diversity_lambda 0.0 \
   | tee expts/${id}

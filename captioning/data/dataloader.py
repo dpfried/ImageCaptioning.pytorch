@@ -231,8 +231,8 @@ class Dataset(data.Dataset):
         # #sort by att_feat length
         # fc_batch, att_batch, label_batch, gts, infos = \
         #     zip(*sorted(zip(fc_batch, att_batch, np.vsplit(label_batch, batch_size), gts, infos), key=lambda x: len(x[1]), reverse=True))
-        fc_batch, att_batch, label_batch, gts, infos = \
-            zip(*sorted(zip(fc_batch, att_batch, label_batch, gts, infos), key=lambda x: 0, reverse=True))
+        # fc_batch, att_batch, label_batch, gts, infos = \
+        #     zip(*sorted(zip(fc_batch, att_batch, label_batch, gts, infos), key=lambda x: 0, reverse=True))
         data = {}
         data['fc_feats'] = np.stack(fc_batch)
         # merge att_feats

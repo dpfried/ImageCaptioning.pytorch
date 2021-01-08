@@ -241,10 +241,10 @@ class CaptionModel(nn.Module):
 
     def contrastive_beam_search(self, init_state, init_logprobs, *args, **kwargs):
         # init_logprobs: batch_size*(num_distractors+1) x (vocab_size+1)
-        # args: each tensor is (batch_size*beam_size) x per_image_view x ...
+        # args: each tensor is (batch_size*beam_size*per_image_dim) x ...
 
-        # state: tuple of tensors (2 x batch_size*beam_size*per_image_view x d)
-        # init_state: (2 x batch_size*1*per_image_view x d) [beam_size initially like 0; call this "this_beam_size" later]
+        # state: tuple of tensors (2 x batch_size*beam_size*per_image_dim x d)
+        # init_state: (2 x batch_size*1*per_image_dim x d) [beam_size initially like 0; call this "this_beam_size" later]
 
         # does one step of classical beam search
 
@@ -253,6 +253,8 @@ class CaptionModel(nn.Module):
         temperature = opt.get('temperature', 1) # This should not affect beam search, but will affect dbs
         beam_size = opt.get('beam_size', 10)
         diversity_lambda = opt.get('diversity_lambda', 0.5)
+        if (diversity_lambda != 0.0):
+            raise NotImplementedError()
         decoding_constraint = opt.get('decoding_constraint', 0)
         remove_bad_endings = opt.get('remove_bad_endings', 0)
         suppress_UNK = opt.get('suppress_UNK', 0)
@@ -264,7 +266,7 @@ class CaptionModel(nn.Module):
 
         per_image_dim = (num_distractors+1)
         batch_size = init_logprobs.shape[0] // per_image_dim
-        assert args[0].size(0) == batch_size * per_image_dim * beam_size
+        assert args[0].size(0) == batch_size * beam_size * per_image_dim
 
         V = init_logprobs.size(-1)
 
@@ -311,7 +313,8 @@ class CaptionModel(nn.Module):
 
             logprobs = log_s1[:,0]
             if t == 0:
-                assert torch.allclose(logprobs[:,0], logprobs[:,1])
+                if beam_size > 1:
+                    assert torch.allclose(logprobs[:,0], logprobs[:,1])
                 logprobs = logprobs[:,0]
             logprobs = logprobs.contiguous().view(-1, V)
 
