@@ -358,6 +358,7 @@ def eval_split(model, crit, loader, eval_kwargs={}):
     device = eval_kwargs.get('device', 'cuda')
 
     pragmatic_inference = eval_kwargs.get('pragmatic_inference', 0)
+    contrastive = eval_kwargs['sample_method'] == 'contrastive_beam_search'
 
     # Make sure in the evaluation mode
     model.eval()
@@ -411,13 +412,15 @@ def eval_split(model, crit, loader, eval_kwargs={}):
             entry = {'image_id': data['infos'][k]['id'], 'caption': sent, 'perplexity': perplexity[k].item(), 'entropy': entropy[k].item()}
             if eval_kwargs.get('dump_path', 0) == 1:
                 entry['file_name'] = data['infos'][k]['file_path']
+            verbose_entry = entry.copy()
+            if contrastive:
+                neighbor_infos = model.neighbor_infos[k]
+                verbose_entry['context_paths'] = [d['file_path'] for d in neighbor_infos]
+                verbose_entry['context_ids'] = [d['id'] for d in neighbor_infos]
             if extras:
-                verbose_entry = entry.copy()
                 for key, value in extras.items():
                     assert len(value) == len(sents)
                     verbose_entry[key] = value[k]
-            else:
-                verbose_entry = entry
             predictions.append(entry)
             verbose_predictions.append(verbose_entry)
             if eval_kwargs.get('dump_images', 0) == 1:
@@ -503,6 +506,10 @@ def generate_caption_candidates(model, input_data, eval_kwargs={}, loader=None):
             _sents = utils.decode_sequence(model.vocab, stacked_beams)
             for sent_ix, sent in enumerate(_sents):
                 entry = {'image_id': data['infos'][k]['id'], 'caption': sent, 'log_prob': _log_prob[sent_ix].item()}
+                if contrastive:
+                    neighbor_infos = model.neighbor_infos[sent_ix]
+                    entry['context_paths'] = [d['file_path'] for d in neighbor_infos]
+                    entry['context_ids'] = [d['id'] for d in neighbor_infos]
                 n_predictions.append(entry)
         seqs = pad_sequence(seqs, batch_first=True, padding_value=0)
         log_probs = torch.cat(log_probs, 0)

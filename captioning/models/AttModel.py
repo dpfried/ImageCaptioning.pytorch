@@ -396,6 +396,11 @@ class AttModel(CaptionModel):
         self.done_beams = self.contrastive_beam_search(
             state, logprobs, *repeated_feats, opt=opt
         )
+        self.neighbor_infos = [
+            neighbor_batch['infos'][ix:ix+per_image_dim]
+            for ix in range(0, batch_size*per_image_dim, per_image_dim)
+        ]
+        assert len(self.neighbor_infos) == batch_size
         for k in range(batch_size):
             if sample_n == beam_size:
                 for _n in range(sample_n):
