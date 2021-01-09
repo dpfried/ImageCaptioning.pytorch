@@ -366,54 +366,12 @@ class AttModel(CaptionModel):
             assert tensor.size(0) == batch_size * per_image_dim
             return tensor.view((batch_size, per_image_dim) + tensor.size()[1:])
 
-        prepped_non_neighbor_feats = self._prepare_feature(fc_feats, att_feats, att_masks)
         # p_fc_feats_a, p_att_feats_a, pp_att_feats_a, p_att_masks_a =
         prepped_feats = self._prepare_feature(
             flat_view(neighbor_batch['fc_feats'].to(device)),
             flat_view(neighbor_batch['att_feats'].to(device)),
             flat_view(neighbor_batch['att_masks'].to(device)) if neighbor_batch['att_masks'] is not None else None,
         )
-        prepped_feats_trunc = self._prepare_feature(
-            flat_view(neighbor_batch['fc_feats'].to(device)),
-            flat_view(neighbor_batch['att_feats'][:,:,:prepped_non_neighbor_feats[1].size(1)].to(device)),
-            flat_view(neighbor_batch['att_masks'][:,:,:prepped_non_neighbor_feats[1].size(1)].to(device)) if neighbor_batch['att_masks'] is not None else None,
-        )
-
-        clipped = self.clip_att(
-            att_feats,
-            att_masks,
-        )
-        clipped_wrapped = pack_wrapper(self.att_embed, *clipped)
-
-        clipped_trunc = self.clip_att(
-            flat_view(neighbor_batch['att_feats'][:,:,:prepped_non_neighbor_feats[1].size(1)].to(device)),
-            flat_view(neighbor_batch['att_masks'][:,:,:prepped_non_neighbor_feats[1].size(1)].to(device)) if neighbor_batch['att_masks'] is not None else None,
-        )
-        clipped_trunc_wrapped = pack_wrapper(self.att_embed, *clipped_trunc)
-
-        embedded = self.att_embed(clipped[0])
-        embedded_trunc = self.att_embed(clipped_trunc[0])
-
-        # this passes:
-        # torch.allclose(prepped_non_neighbor_feats[0].view(10, -1), prepped_feats_trunc[0].view(10, 9, -1)[:,0])
-        # this fails:
-        # torch.allclose(prepped_non_neighbor_feats[1].view(10, -1), prepped_feats_trunc[1].view(10, 9, -1)[:,0])
-
-        # these both pass
-        # torch.allclose(clipped[0].view(10, -1), clipped_trunc[0].view(10, 9, -1)[:,0])
-        # torch.allclose(clipped[1].view(10, -1), clipped_trunc[1].view(10, 9, -1)[:,0])
-
-        # this fails:
-        # torch.allclose(clipped_trunc_wrapped.view(10, 9, -1)[:,0], clipped_wrapped.view(10, -1))
-
-        # torch.allclose(clipped[0].view(10, -1), clipped_trunc[0].view(10, 9, -1)[:,0])
-
-        # torch.allclose(self.att_embed(clipped[0]).view(10, -1), self.att_embed(clipped_trunc[0]).view(10, 9, -1)[:,0])
-        # Out[8]: False
-        # torch.allclose(self.att_embed(clipped[0]).view(10, -1), self.att_embed(clipped_trunc[0]).view(10, 9, -1)[:,0], atol=1e-4)
-        # Out[22]: True
-        # torch.allclose(self.att_embed(clipped[0]), self.att_embed(clipped_trunc[0].view(10, 9, *clipped[0].size()[1:])[:,0]))
-        # Out[9]: True
 
         assert beam_size <= self.vocab_size + 1, 'lets assume this for now, otherwise this corner case causes a few headaches down the road. can be dealt with in future if needed'
         seq = fc_feats.new_full((batch_size*sample_n, self.seq_length), self.pad_idx, dtype=torch.long)
@@ -429,18 +387,12 @@ class AttModel(CaptionModel):
         it_non_neighbor = fc_feats.new_full([batch_size], self.bos_idx, dtype=torch.long)
         # batch_size*per_image_dim x V
         logprobs, state = self.get_logprobs_state(it, *(prepped_feats + (state,)))
-        logprobs_non_neighbor, state_non_neighbor = self.get_logprobs_state(it_non_neighbor, *(prepped_non_neighbor_feats + (self.init_hidden(batch_size),)))
-        # logprobs, state = self.get_logprobs_state(it, p_fc_feats_a, p_att_feats_a, pp_att_feats_a, p_att_masks_a, state)
 
         # (batch_size*beam_size*per_image_view) x ...
         repeated_feats = (combine_first_two(ten) for ten in utils.repeat_tensors(
             beam_size,
             [unflat_view(t) for t in prepped_feats]
-            # [p_fc_feats_a, p_att_feats_a, pp_att_feats_a, p_att_masks_a]
         ))
-        repeated_non_neighbor_feats = utils.repeat_tensors(beam_size,
-                                                           prepped_non_neighbor_feats)
-        done_beams_non_neighbor = self.beam_search(state_non_neighbor, logprobs_non_neighbor, *repeated_non_neighbor_feats, opt=opt)
         self.done_beams = self.contrastive_beam_search(
             state, logprobs, *repeated_feats, opt=opt
         )
