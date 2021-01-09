@@ -181,6 +181,8 @@ class CaptionModel(nn.Module):
                     # add diversity
                     logprobs = logprobs_table[divm]
                     # suppress previous word
+                    print(t, logprobs.norm())
+                    print(logprobs.size())
                     if decoding_constraint and t-divm > 0:
                         logprobs.scatter_(1, beam_seq_table[divm][:, :, t-divm-1].reshape(-1, 1).to(device), float('-inf'))
                     if remove_bad_endings and t-divm > 0:
@@ -206,6 +208,10 @@ class CaptionModel(nn.Module):
                                                 beam_seq_logprobs_table[divm],
                                                 beam_logprobs_sum_table[divm],
                                                 state_table[divm])
+                    print(t)
+                    # print(beam_seq_table[divm][:2,:,-1])
+                    print("state size: {}".format(state_table[divm][0].size()))
+                    print("state norm: {}".format(state_table[divm][0].norm()))
 
                     # if time's up... or if end token is reached then copy beams
                     for b in range(batch_size):
@@ -229,10 +235,17 @@ class CaptionModel(nn.Module):
                         beam_logprobs_sum_table[divm][b, is_end] -= 1000
 
                     # move the current group one step forward in time
-                    
-                    it = beam_seq_table[divm][:, :, t-divm].reshape(-1).to(logprobs.device)
+
+                    it = beam_seq_table[divm][:, :, t-divm]
+                    print('it {}'.format(t))
+                    print(it[:2])
+                    print(it.float().norm())
+                    it = it.reshape(-1).to(logprobs.device)
                     logprobs_table[divm], state_table[divm] = self.get_logprobs_state(it, *(args[divm] + [state_table[divm]]))
                     logprobs_table[divm] = F.log_softmax(logprobs_table[divm] / temperature, dim=-1)
+                    print('lp size: {}'.format(logprobs_table[divm].size()))
+                    print('lp norm: {}'.format(logprobs_table[divm].norm()))
+                    print()
 
         # all beams are sorted by their log-probabilities
         done_beams_table = [[sorted(done_beams_table[b][i], key=lambda x: -x['p'])[:bdash] for i in range(group_size)] for b in range(batch_size)]
@@ -244,7 +257,7 @@ class CaptionModel(nn.Module):
         # args: each tensor is (batch_size*beam_size*per_image_dim) x ...
 
         # state: tuple of tensors (2 x batch_size*beam_size*per_image_dim x d)
-        # init_state: (2 x batch_size*1*per_image_dim x d) [beam_size initially like 0; call this "this_beam_size" later]
+        # init_state: (2 x batch_size*1*per_image_dim x d) [beam_size initially like 0; call this "this_state_beam_size" later]
 
         # does one step of classical beam search
 
@@ -283,7 +296,9 @@ class CaptionModel(nn.Module):
         done_beams_table = [[] for _ in range(batch_size)]
         state_table = [_.clone() for _ in init_state]
         # logprobs_table = list(init_logprobs.reshape(batch_size * bdash, group_size, -1).chunk(group_size, 0))
-        logprobs_table = init_logprobs.clone()
+
+        assert init_logprobs.size() == (batch_size*per_image_dim, V)
+        logprobs_table = init_logprobs.clone().view(batch_size, per_image_dim, 1, V).expand(batch_size, per_image_dim, beam_size,  V)
         # END INIT
 
         # Chunk elements in the args
@@ -292,17 +307,12 @@ class CaptionModel(nn.Module):
             raise NotImplementedError()
 
         for t in range(self.seq_length):
-            # logprobs: batch_size*(beam_size if t > 0 else 1) x V
-            logprobs = logprobs_table
-            if t == 0:
-                assert logprobs.size() == (batch_size*per_image_dim, V)
-                log_s0 = logprobs.view(batch_size, per_image_dim, 1, V).expand(batch_size, per_image_dim, beam_size,  V)
-                this_beam_size = 1
-            else:
-                assert logprobs.size() == (batch_size*per_image_dim*beam_size, V)
-                log_s0 = logprobs.view(batch_size, per_image_dim, beam_size, V)
-                this_beam_size = beam_size
+            # log_s0: batch_size*(beam_size if t > 0 else 1) x V
+            assert logprobs_table.size() == (batch_size, per_image_dim, beam_size, V)
+            # state
+            this_state_beam_size = 1 if t == 0 else beam_size
             # add vocab dimension. batch_size x per_image_dim x beam_size x V
+            log_s0 = logprobs_table
             log_priors_expanded = log_priors.unsqueeze(-1).expand_as(log_s0)
             log_l0 = (log_s0 + log_priors_expanded).log_softmax(1)
             log_s1 = (log_s0 + (log_l0 * alpha)).log_softmax(3)
@@ -316,6 +326,8 @@ class CaptionModel(nn.Module):
                 if beam_size > 1:
                     assert torch.allclose(logprobs[:,0], logprobs[:,1])
                 logprobs = logprobs[:,0]
+            print(t, logprobs.norm())
+            print(logprobs.size())
             logprobs = logprobs.contiguous().view(-1, V)
 
             # suppress previous word
@@ -336,10 +348,10 @@ class CaptionModel(nn.Module):
 
             state_table_rearranged = tuple(
                 einops.rearrange(
-                    t, "x (batch_size this_beam_size per_image_dim) d -> x (batch_size this_beam_size) per_image_dim d",
+                    t, "x (batch_size this_state_beam_size per_image_dim) d -> x (batch_size this_state_beam_size) per_image_dim d",
                     batch_size=batch_size,
                     per_image_dim=per_image_dim,
-                    this_beam_size=this_beam_size
+                    this_state_beam_size=this_state_beam_size,
                 )
                 for t in state_table
             )
@@ -357,7 +369,12 @@ class CaptionModel(nn.Module):
                                     beam_seq_logprobs_table,
                                     beam_logprobs_sum_table,
                                     state_table_rearranged, log_l1=log_l1)
-            # don't use this_beam_size because in t0 the beam expands to the full beam_size (from 1)
+            print(t)
+            # print(beam_seq_table[:2,:,-1])
+            print("state size: {}".format(state_table_rearranged[0][:,:,0].size()))
+            print("state norm: {}".format(state_table_rearranged[0][:,:,0].norm()))
+
+            # don't use this_state_beam_size because in t0 the beam expands to the full beam_size (from 1)
             state_table = tuple(
                 einops.rearrange(
                     t, "x (batch_size beam_size) per_image_dim d -> x (batch_size beam_size per_image_dim) d",
@@ -392,9 +409,25 @@ class CaptionModel(nn.Module):
 
             it = beam_seq_table[:, :, t]
             it = it.unsqueeze(2).expand(-1, -1, per_image_dim)
+            print('it {}'.format(t))
+            print(it[:2,:,0])
+            print(it[:,:,0].float().norm())
             it = it.reshape(-1).to(logprobs.device)
+
             logprobs_table, state_table = self.get_logprobs_state(it, *(args + [state_table]))
             logprobs_table = F.log_softmax(logprobs_table / temperature, dim=-1)
+
+            # TODO: see if we can make state and args consistent so that we don't need to do this
+            logprobs_table = einops.rearrange(
+                logprobs_table,
+                "(batch_size beam_size per_image_dim) v -> batch_size per_image_dim beam_size v",
+                batch_size=batch_size,
+                beam_size=beam_size,
+                per_image_dim=per_image_dim
+            )
+            print('lp size: {}'.format(logprobs_table[:,0].size()))
+            print('lp norm: {}'.format(logprobs_table[:,0].norm()))
+            print()
 
         # all beams are sorted by their log-probabilities
         done_beams = [sorted(done_beams_table[b], key=lambda x: -x['p'])[:beam_size] for b in range(batch_size)]
