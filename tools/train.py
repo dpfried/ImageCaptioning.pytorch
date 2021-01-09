@@ -285,5 +285,4 @@ def train(opt):
 
 
 opt = opts.parse_opt()
-opts.add_loader_options(opt)
 train(opt)

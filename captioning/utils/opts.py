@@ -202,6 +202,8 @@ def parse_opt():
     # For diversity evaluation during training
     add_diversity_opts(parser)
 
+    add_loader_options(parser)
+
 
     # config
     parser.add_argument('--cfg', type=str, default=None,
