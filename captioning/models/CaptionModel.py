@@ -306,11 +306,13 @@ class CaptionModel(nn.Module):
             # TODO: should this use s1?
             # batch_size x per_image_dim x beam_size x V
             if opt['pragmatic_incremental_l1_uses'] == 's0':
-                log_l1 = (log_l0 + log_s0).log_softmax(1)
+                s_to_use = log_s0
             elif opt['pragmatic_incremental_l1_uses'] == 's1':
-                log_l1 = (log_l0 + log_s0).log_softmax(1)
+                s_to_use = log_s1
             else:
                 raise ValueError("invalid --pragmatic_incremental_l1_uses {}".format(opt['pragmatic_incremental_l1_uses']))
+
+            log_l1 = (log_l0 + s_to_use).log_softmax(1)
 
             logprobs = log_s1[:,0]
             if t == 0:
