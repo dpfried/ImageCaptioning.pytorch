@@ -192,6 +192,9 @@ def parse_opt():
     parser.add_argument('--train_beam_size', type=int, default=1,
                     help='')
 
+    # contrastive loss
+    parser.add_argument('--contrastive_after', type=int, default=-1)
+
     # Used for self critical
     parser.add_argument('--sc_sample_method', type=str, default='greedy',
                     help='')
@@ -203,6 +206,8 @@ def parse_opt():
     add_diversity_opts(parser)
 
     add_loader_options(parser)
+
+    add_pragmatics_opts(parser)
 
 
     # config

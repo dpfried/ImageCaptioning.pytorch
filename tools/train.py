@@ -34,7 +34,13 @@ def train(opt):
     ################################
     # Build dataloader
     ################################
-    loader = DataLoader(opt)
+    if 0 <= opt.contrastive_after <= opt.max_epochs:
+        build_nearest_neighbor_indices_for_splits = ['train']
+    else:
+        build_nearest_neighbor_indices_for_splits = None
+    loader = DataLoader(opt,
+                        build_nearest_neighbor_indices_for_splits=build_nearest_neighbor_indices_for_splits,
+                        index_serialization_root_path=opt.index_serialization_root_path)
     opt.vocab_size = loader.vocab_size
     opt.seq_length = loader.seq_length
 
@@ -160,6 +166,11 @@ def train(opt):
                 else:
                     struc_flag = False
 
+                if opt.contrastive_after != -1 and epoch >= opt.contrastive_after:
+                    contrastive_flag = True
+                else:
+                    contrastive_flag = False
+
                 epoch_done = False
                     
             start = time.time()
@@ -173,12 +184,25 @@ def train(opt):
             torch.cuda.synchronize()
             start = time.time()
 
-            tmp = [data['fc_feats'], data['att_feats'], data['labels'], data['masks'], data['att_masks']]
+            if contrastive_flag:
+                ixs = [d['ix'] for d in data['infos']]
+                neighbor_data = loader.indices['train'].get_neighbor_batch(
+                    loader, data['fc_feats'].numpy(), opt.pragmatic_distractors,
+                    include_self=True, self_indices=ixs
+                )
+                data_to_use = neighbor_data
+            else:
+                data_to_use = data
+
+            tmp = [data_to_use['fc_feats'], data_to_use['att_feats'], data_to_use['labels'],
+                   data_to_use['masks'], data_to_use['att_masks']]
             tmp = [_ if _ is None else _.cuda() for _ in tmp]
             fc_feats, att_feats, labels, masks, att_masks = tmp
-            
+
             optimizer.zero_grad()
-            model_out = dp_lw_model(fc_feats, att_feats, labels, masks, att_masks, data['gts'], torch.arange(0, len(data['gts'])), sc_flag, struc_flag)
+            model_out = dp_lw_model(fc_feats, att_feats, labels, masks, att_masks,
+                                    data_to_use['gts'], torch.arange(0, len(data_to_use['gts'])),
+                                    sc_flag, struc_flag, contrastive_flag)
 
             loss = model_out['loss'].mean()
 
