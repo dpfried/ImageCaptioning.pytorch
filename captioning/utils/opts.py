@@ -270,6 +270,7 @@ def parse_opt():
 def add_loader_options(parser):
     parser.add_argument('--num_workers', type=int, default=4,
                         help='number of pytorch workers (will have k + 1 total processes)')
+    parser.add_argument('--max_images_per_split', type=int, help='limit to this many images in each split: train / val / test')
 
 def add_eval_options(parser):
     # Basic options

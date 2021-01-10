@@ -414,7 +414,12 @@ def eval_split(model, crit, loader, eval_kwargs={}):
                 entry['file_name'] = data['infos'][k]['file_path']
             verbose_entry = entry.copy()
             if contrastive:
-                neighbor_infos = model.neighbor_infos[k]
+                # DataParallel wrapper doesn't make attrs accessible
+                if isinstance(model, torch.nn.DataParallel):
+                    underlying_model = model.module
+                else:
+                    underlying_model = model
+                neighbor_infos = underlying_model.neighbor_infos[k]
                 verbose_entry['context_paths'] = [d['file_path'] for d in neighbor_infos]
                 verbose_entry['context_ids'] = [d['id'] for d in neighbor_infos]
             if extras:

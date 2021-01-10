@@ -163,6 +163,10 @@ class Dataset(data.Dataset):
             elif opt.train_only == 0: # restval
                 self.split_ix['train'].append(ix)
 
+        if opt.max_images_per_split is not None:
+            for key in ['train', 'val', 'test']:
+                self.split_ix[key] = self.split_ix[key][:opt.max_images_per_split]
+
         print('assigned %d images to split train' %len(self.split_ix['train']))
         print('assigned %d images to split val' %len(self.split_ix['val']))
         print('assigned %d images to split test' %len(self.split_ix['test']))
