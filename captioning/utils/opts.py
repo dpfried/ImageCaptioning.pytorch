@@ -194,6 +194,7 @@ def parse_opt():
 
     # contrastive loss
     parser.add_argument('--contrastive_after', type=int, default=-1)
+    parser.add_argument('--contrastive_em', choices=['soft', 'hard'], default='hard')
 
     # Used for self critical
     parser.add_argument('--sc_sample_method', type=str, default='greedy',
@@ -371,6 +372,9 @@ def add_pragmatics_opts(parser: argparse.ArgumentParser):
     parser.add_argument('--pragmatic_distractors_to_choose', type=int, default=1)
     parser.add_argument('--pragmatic_incremental_alpha', type=float, default=1.0)
     parser.add_argument('--pragmatic_incremental_l1_uses', choices=['s0', 's1'], default='s0')
+
+    parser.add_argument('--pragmatic_distractor_scoring', choices=['uniform', 'mlp'], default='uniform')
+    parser.add_argument('--pragmatic_distractor_scoring_hidden_size', type=int, default=200)
 
 def add_mbr_opts(parser: argparse.ArgumentParser):
     parser.add_argument('--mbr_inference', type=int, default=0, help='')

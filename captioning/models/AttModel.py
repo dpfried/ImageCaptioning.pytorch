@@ -27,6 +27,7 @@ import einops
 
 from .CaptionModel import CaptionModel
 from ..data.dataloader import NearestNeighborIndex
+from ..modules.distractor_scorer import DistractorScorer
 
 bad_endings = ['a','an','the','in','for','at','of','with','before','after','on','upon','near','to','is','are','am']
 bad_endings += ['the']
@@ -110,9 +111,27 @@ class AttModel(CaptionModel):
         self.vocab = opt.vocab
         self.bad_endings_ix = [int(k) for k,v in self.vocab.items() if v in bad_endings]
 
+        if opt.pragmatic_distractor_scoring == 'mlp':
+            self.distractor_scorer = DistractorScorer(opt)
+        else:
+            self.distractor_scorer = None
+
+    def distractor_log_probs(self, fc_feats_target, fc_feats_distr):
+        # fc_feats_target: batch_size x 1 x d
+        # fc_feats_distr: batch_size x 1 x d
+        if hasattr(self, 'distractor_scorer') and self.distractor_scorer is not None:
+            distractor_log_probs = self.distractor_scorer(fc_feats_target, fc_feats_distr)
+        else:
+            # log p(i' | i) for target image i and distractor i'
+            batch_size, _, num_distractors = fc_feats_distr.size()
+            distractor_log_probs = torch.full((batch_size, num_distractors), 1./num_distractors).to(fc_feats_distr.device).log()
+        # log p(i' | i) for target image i and distractor i'
+        # batch_size x n_distractors
+        return distractor_log_probs
+
     def init_hidden(self, bsz):
         weight = self.logit.weight \
-                 if hasattr(self.logit, "weight") \
+            if hasattr(self.logit, "weight") \
                  else self.logit[0].weight
         return (weight.new_zeros(self.num_layers, bsz, self.rnn_size),
                 weight.new_zeros(self.num_layers, bsz, self.rnn_size))

@@ -61,6 +61,10 @@ class LossWrapper(torch.nn.Module):
 
             assert num_distractors+1 == per_image_dim
 
+            fc_feats_target, fc_feats_distr = fc_feats.split((1, num_distractors), dim=1)
+            att_feats_target, att_feats_distr = att_feats.split((1, num_distractors), dim=1)
+            att_masks_target, att_masks_distr = att_masks.split((1, num_distractors), dim=1)
+
             labels_from_target = labels[:,0]
             masks_from_target = masks[:,0]
 
@@ -118,13 +122,28 @@ class LossWrapper(torch.nn.Module):
                 log_l1 = (select_label(log_l0, t+1) + select_label(s_to_use, t+1)).log_softmax(3)
                 log_priors = log_l1
 
+            # log p(c | i, i') for caption c, target image i and distractor i'
             # batch_size x n_distractors x num_captions
             target_log_seq_s1 = log_s1_sums[...,0]
 
-            # batch_size x num_captions
-            max_target_log_seq = target_log_seq_s1.max(1).values
+            # TODO: a model that incorporates object features too
+            # log p(i' | i) for target image i and distractor i'
+            # batch_size x n_distractors
+            distractor_log_probs = self.model.distractor_log_probs(fc_feats_target, fc_feats_distr)
 
-            loss = -(max_target_log_seq.sum()) / word_counts[:,0,:,0].sum()
+            # log p(c, i' | i))
+            # batch_size x n_distractors x num_captions
+            joint_log_s1 = target_log_seq_s1 + distractor_log_probs.unsqueeze(-1).expand_as(target_log_seq_s1)
+
+            # batch_size x num_captions
+            if opt.contrastive_em == 'hard':
+                obj_log_s1 = joint_log_s1.max(1).values
+            elif opt.contrastive_em == 'soft':
+                obj_log_s1 = joint_log_s1.sum(1)
+
+            # TODO: this is a bit weird: scaling to be similar to the loss used in non-contrastive training, but
+            #  will hopefully prevent having to mess with the LRs too much
+            loss = -(obj_log_s1.sum()) / word_counts[:,0,:,0].sum()
         elif not sc_flag:
             loss = self.crit(self.model(fc_feats, att_feats, labels[..., :-1], att_masks), labels[..., 1:], masks[..., 1:])
         else:
