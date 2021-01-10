@@ -109,7 +109,13 @@ class LossWrapper(torch.nn.Module):
                 this_mask = masks_from_target_expanded[...,t+1]
                 log_s1_sums += (log_s1_chosen * this_mask)
                 word_counts += this_mask
-                log_l1 = (select_label(log_l0, t+1) + select_label(log_s0, t+1)).log_softmax(3)
+                if opt.pragmatic_incremental_l1_uses == 's0':
+                    s_to_use = log_s0
+                elif opt.pragmatic_incremental_l1_uses == 's1':
+                    s_to_use = log_s1
+                else:
+                    raise ValueError("invalid --pragmatic_incremental_l1_uses {}".format(opt.pragmatic_incremental_l1_uses))
+                log_l1 = (select_label(log_l0, t+1) + select_label(s_to_use, t+1)).log_softmax(3)
                 log_priors = log_l1
 
             # batch_size x n_distractors x num_captions

@@ -9,6 +9,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 import numpy as np
 
+import pprint
+import sys
+
 import time
 import os
 from six.moves import cPickle
@@ -308,5 +311,10 @@ def train(opt):
         print(stack_trace)
 
 
-opt = opts.parse_opt()
-train(opt)
+if __name__:
+    print(' '.join(sys.argv))
+    opt = opts.parse_opt()
+    utils.dump_git_status()
+    pprint.pprint(vars(opt))
+
+    train(opt)
