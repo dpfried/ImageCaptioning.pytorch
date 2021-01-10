@@ -240,7 +240,7 @@ class CaptionModel(nn.Module):
         done_beams = [sum(_, []) for _ in done_beams_table]
         return done_beams
 
-    def contrastive_beam_search(self, init_state, init_logprobs, *args, **kwargs):
+    def contrastive_beam_search(self, num_distractors, init_state, init_logprobs, *args, **kwargs):
         # init_logprobs: batch_size*(num_distractors+1) x (vocab_size+1)
         # args: each tensor is (batch_size*beam_size*per_image_dim) x ...
 
@@ -258,8 +258,6 @@ class CaptionModel(nn.Module):
         remove_bad_endings = opt.get('remove_bad_endings', 0)
         suppress_UNK = opt.get('suppress_UNK', 0)
         length_penalty = utils.penalty_builder(opt.get('length_penalty', ''))
-
-        num_distractors = opt['pragmatic_distractors']
 
         alpha = opt['pragmatic_incremental_alpha']
 

@@ -358,16 +358,66 @@ class AttModel(CaptionModel):
         batch_size = fc_feats.size(0)
         device = fc_feats.device
 
-        num_distractors = opt['pragmatic_distractors']
-        per_image_dim = num_distractors + 1
+        candidate_distractors = opt['pragmatic_distractors']
 
         neighbor_batch = nearest_neighbor_index.get_neighbor_batch(
-            loader, fc_feats.cpu().numpy(), k_neighbors=opt['pragmatic_distractors'],
+            loader, fc_feats.cpu().numpy(), k_neighbors=candidate_distractors,
             include_self=True, self_indices=[data['infos'][img_ix]['ix'] for img_ix in range(batch_size)],
         )
 
         # assert torch.allclose(neighbor_batch['fc_feats'][:,0].cpu(), fc_feats.cpu())
         # neighbor_batch['fc_feats']: batch_size x k_neighbors+1 x d
+
+        fc_feats = neighbor_batch['fc_feats'].to(device)
+        att_feats = neighbor_batch['att_feats'].to(device)
+        att_masks = neighbor_batch['att_masks'].to(device)
+        infos = neighbor_batch['infos']
+
+        if opt['pragmatic_distractor_type'] == 'choose_within_closest':
+            # fc_feats_target: batch_size x 1 x d
+            # fc_feats_distr: batch_size x candidate_distractors x d
+            fc_feats_target, fc_feats_distr = fc_feats.split((1, candidate_distractors), dim=1)
+            att_feats_target, att_feats_distr = att_feats.split((1, candidate_distractors), dim=1)
+            if att_masks is not None:
+                att_masks_target, att_masks_distr = att_masks.split((1, candidate_distractors), dim=1)
+
+            num_distractors = opt['pragmatic_distractors_to_choose']
+
+            # log p(i' | i) for target image i and distractor i'
+            # batch_size x candidate_distractors
+            distractor_log_probs = self.distractor_log_probs(fc_feats_target, fc_feats_distr)
+            distractor_lps, distractor_indices = distractor_log_probs.topk(num_distractors, dim=-1)
+
+            new_infos = []
+            for b in range(batch_size):
+                # append info for target
+                new_infos.append(infos[b*(1+candidate_distractors)])
+                for ix in distractor_indices[b]:
+                    # add ix.item()+1 because we topk'd over distractors only
+                    new_infos.append(infos[b*(1+candidate_distractors) + ix.item() + 1])
+            assert len(new_infos) == batch_size * (num_distractors+1)
+
+            fc_feats_distr = fc_feats_distr.gather(
+                1, distractor_indices.unsqueeze(-1).expand(-1,-1,fc_feats_distr.size(-1))
+            )
+            fc_feats = torch.cat((fc_feats_target, fc_feats_distr), 1)
+            att_feats_distr = att_feats_distr.gather(
+                1, distractor_indices.unsqueeze(-1).unsqueeze(-1).expand(-1,-1,*att_feats_distr.size()[-2:])
+            )
+            att_feats = torch.cat((att_feats_target, att_feats_distr), 1)
+            if att_masks is not None:
+                att_masks_distr = att_masks_distr.gather(
+                    1, distractor_indices.unsqueeze(-1).expand(-1,-1,att_masks_distr.size(-1))
+                )
+                att_masks = torch.cat((att_masks_target, att_masks_distr), 1)
+        else:
+            num_distractors = candidate_distractors
+        per_image_dim = num_distractors + 1
+
+        self.neighbor_infos = [
+            infos[ix:ix+per_image_dim]
+            for ix in range(0, batch_size*per_image_dim, per_image_dim)
+        ]
 
         def combine_first_two(tensor):
             return tensor.view((tensor.size(0) * tensor.size(1),) + tensor.size()[2:])
@@ -387,9 +437,9 @@ class AttModel(CaptionModel):
 
         # p_fc_feats_a, p_att_feats_a, pp_att_feats_a, p_att_masks_a =
         prepped_feats = self._prepare_feature(
-            flat_view(neighbor_batch['fc_feats'].to(device)),
-            flat_view(neighbor_batch['att_feats'].to(device)),
-            flat_view(neighbor_batch['att_masks'].to(device)) if neighbor_batch['att_masks'] is not None else None,
+            flat_view(fc_feats),
+            flat_view(att_feats),
+            flat_view(att_masks) if att_masks is not None else None,
         )
 
         assert beam_size <= self.vocab_size + 1, 'lets assume this for now, otherwise this corner case causes a few headaches down the road. can be dealt with in future if needed'
@@ -413,12 +463,8 @@ class AttModel(CaptionModel):
             [unflat_view(t) for t in prepped_feats]
         ))
         self.done_beams = self.contrastive_beam_search(
-            state, logprobs, *repeated_feats, opt=opt
+            num_distractors, state, logprobs, *repeated_feats, opt=opt
         )
-        self.neighbor_infos = [
-            neighbor_batch['infos'][ix:ix+per_image_dim]
-            for ix in range(0, batch_size*per_image_dim, per_image_dim)
-        ]
         assert len(self.neighbor_infos) == batch_size
         for k in range(batch_size):
             if sample_n == beam_size:
