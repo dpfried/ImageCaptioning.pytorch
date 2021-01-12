@@ -190,7 +190,7 @@ def train(opt):
             if contrastive_flag:
                 ixs = [d['ix'] for d in data['infos']]
                 neighbor_data = loader.indices['train'].get_neighbor_batch(
-                    loader, data['fc_feats'].numpy(), opt.pragmatic_distractors,
+                    loader, data['fc_feats'].cpu().numpy(), opt.pragmatic_distractors,
                     include_self=True, self_indices=ixs,
                     neighbor_type=opt.pragmatic_distractor_candidate_type
                 )

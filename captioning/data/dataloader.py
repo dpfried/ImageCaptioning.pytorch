@@ -367,7 +367,7 @@ class NearestNeighborIndex:
         if len(img_fc_feat.shape) == 1:
             # add a dimension
             img_fc_feat = img_fc_feat[None]
-        n_images = img_fc_feat.size(0)
+        n_images = img_fc_feat.shape[0]
         per_image_dim = k_neighbors + (1 if include_self else 0)
         if neighbor_type == 'closest':
             D, I = self.index.search(img_fc_feat, k_neighbors)

@@ -168,7 +168,7 @@ def generate_pragmatic(model: AttModel, loader: DataLoader, fc_feats, att_feats,
     k_neighbors = eval_kwargs['pragmatic_distractors']
     nearest_neighbor_index = loader.indices[eval_kwargs['pragmatic_distractor_split']]
     all_neighbors = nearest_neighbor_index.get_neighbor_batch(
-        loader, fc_feats.cpu(), k_neighbors=k_neighbors,
+        loader, fc_feats.cpu().numpy(), k_neighbors=k_neighbors,
         include_self=True, self_indices=[data['infos'][img_ix]['ix'] for img_ix in range(n_imgs)],
         neighbor_type=eval_kwargs['pragmatic_distractor_candidate_type']
     )
