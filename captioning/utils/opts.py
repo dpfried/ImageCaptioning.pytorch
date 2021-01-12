@@ -385,6 +385,10 @@ def add_mbr_opts(parser: argparse.ArgumentParser):
     parser.add_argument('--mbr_type', choices=['bert_cosine_sim'], default='bert_cosine_sim')
     parser.add_argument('--mbr_s0_weight', type=float, default=0.0)
 
+def add_clip_opts(parser: argparse.ArgumentParser):
+    parser.add_argument('--clip_inference', type=int, default=0, help='')
+    parser.add_argument('--clip_s0_weight', type=float, default=0.0)
+
 if __name__ == '__main__':
     import sys
     sys.argv = [sys.argv[0]]

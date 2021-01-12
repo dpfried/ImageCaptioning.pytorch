@@ -7,6 +7,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import einops
 
+from PIL import Image
+
 from torch.nn.utils.rnn import pad_sequence
 
 import itertools
@@ -24,6 +26,7 @@ from . import misc as utils
 # load coco-caption if available
 from ..data.dataloader import DataLoader
 from ..models import AttModel
+
 
 SPICE_THREADS=4
 
@@ -286,6 +289,41 @@ def pragmatic_choose_from_candidates(instance_candidates: dict, eval_kwargs):
     prediction['caption'] = caption
     return prediction
 
+def clip_choose_from_candidates(instance_candidates: dict, eval_kwargs, clip_model, clip_transform):
+    from clip.clip import tokenize
+    device = eval_kwargs.get('device', 'cuda')
+    s0_weight = eval_kwargs['clip_s0_weight']
+    if not (0.0 <= s0_weight <= 1.0):
+        raise ValueError(f"--clip_s0_weight {s0_weight} must be in [0, 1]")
+
+    prediction = {}
+    for key in ['image_id', 'candidates', 'perplexity', 'entropy', 'context_paths', 'context_ids']:
+        prediction[key] = instance_candidates[key]
+
+    target_path = instance_candidates['context_paths'][0]
+    candidate_captions = instance_candidates['candidates']
+    nonempty_indices, nonempty_captions = zip(*[(ix, cap) for ix, cap in enumerate(candidate_captions) if cap])
+    nonempty_captions = list(nonempty_captions)
+    nonempty_indices = torch.tensor(nonempty_indices).long()
+
+    s0_scores = torch.tensor(instance_candidates['target_s0_scores'])
+    s0_scores = s0_scores[nonempty_indices]
+
+    image = clip_transform(Image.open(target_path)).unsqueeze(0).to(device)
+    text = tokenize(nonempty_captions).to(device)
+
+    with torch.no_grad():
+        # TODO: why do these differ?
+        logits_per_image, logits_per_text = clip_model(image, text)
+        clip_log_probs = logits_per_image.log_softmax(dim=-1)
+
+    clip_log_probs = clip_log_probs.to(s0_scores.device)
+    joint_scores = s0_weight * s0_scores + (1 - s0_weight) * clip_log_probs
+    best_score, best_cap = joint_scores.max(-1)
+    caption = nonempty_captions[best_cap]
+    prediction['caption'] = caption
+    return prediction
+
 def mbr_choose_from_candidates(instance_candidates: dict, eval_kwargs, sent_rep_model, sent_rep_tokenizer):
     device = eval_kwargs.get('device', 'cuda')
     mbr_type = eval_kwargs.get('mbr_type', 'bert_cosine_sim')
@@ -324,21 +362,30 @@ def eval_split_from_serialized(path, eval_kwargs={}):
     device = eval_kwargs.get('device', 'cuda')
     pragmatic_inference = eval_kwargs.get('pragmatic_inference', 0)
     mbr_inference = eval_kwargs.get('mbr_inference', 0)
+    clip_inference = eval_kwargs.get('clip_inference', 0)
 
-    if mbr_inference and pragmatic_inference:
-        raise ValueError("can't do both --pragmatic_inference and --mbr_inference")
+    if sum([mbr_inference, pragmatic_inference, clip_inference]) > 1:
+        raise ValueError("can't do multiple of --pragmatic_inference, --mbr_inference, --clip_inference: {}".format(
+            [mbr_inference, pragmatic_inference, clip_inference]
+        ))
 
     if mbr_inference:
         from transformers import AutoTokenizer, AutoModel
-        tokenizer = AutoTokenizer.from_pretrained("bert-large-uncased")
-        model = AutoModel.from_pretrained("bert-large-uncased")
-        model = model.to(device)
+        bert_tokenizer = AutoTokenizer.from_pretrained("bert-large-uncased")
+        bert_model = AutoModel.from_pretrained("bert-large-uncased")
+        bert_model = bert_model.to(device)
+
+    if clip_inference:
+        from clip import clip
+        clip_model, clip_transform = clip.load("ViT-B/32", device=device)
 
     candidates = torch.load(path)
     predictions = []
     for instance_candidates in tqdm.tqdm(candidates, ncols=80):
         if mbr_inference:
-            prediction = mbr_choose_from_candidates(instance_candidates, eval_kwargs, model, tokenizer)
+            prediction = mbr_choose_from_candidates(instance_candidates, eval_kwargs, bert_model, bert_tokenizer)
+        elif clip_inference:
+            prediction = clip_choose_from_candidates(instance_candidates, eval_kwargs, clip_model, clip_transform)
         else:
             prediction = pragmatic_choose_from_candidates(instance_candidates, eval_kwargs)
         predictions.append(prediction)
