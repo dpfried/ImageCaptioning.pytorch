@@ -373,6 +373,10 @@ def add_pragmatics_opts(parser: argparse.ArgumentParser):
     parser.add_argument('--pragmatic_incremental_alpha', type=float, default=1.0)
     parser.add_argument('--pragmatic_incremental_l1_uses', choices=['s0', 's1'], default='s0')
 
+    parser.add_argument('--pragmatic_distractor_candidate_type',
+                        choices=['closest', 'batch', 'random'],
+                        default='closest')
+
     parser.add_argument('--pragmatic_distractor_scoring', choices=['uniform', 'mlp'], default='uniform')
     parser.add_argument('--pragmatic_distractor_scoring_hidden_size', type=int, default=200)
 

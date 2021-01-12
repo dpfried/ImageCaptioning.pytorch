@@ -361,23 +361,43 @@ class NearestNeighborIndex:
         self._init_others(split, loader)
         self._init_index()
 
-    def get_neighbor_batch(self, loader, img_fc_feat, k_neighbors, include_self=False, self_indices=None):
+    def get_neighbor_batch(self, loader, img_fc_feat, k_neighbors, include_self=False, self_indices=None,
+                           neighbor_type='closest'):
         # assert len(img_fc_feat.shape) == 1, "should be the features for a single image"
         if len(img_fc_feat.shape) == 1:
             # add a dimension
             img_fc_feat = img_fc_feat[None]
-        D, I = self.index.search(img_fc_feat, k_neighbors)
-        n_images, k_ = D.shape
-        # assert n_images == 1
-
+        n_images = img_fc_feat.size(0)
         per_image_dim = k_neighbors + (1 if include_self else 0)
-
-        # n_images x per_image_dim
-        indices = torch.tensor([[self.loader_ixs[i] for i in inds] for inds in I]).long()
-        if include_self:
-            indices = torch.cat((torch.tensor(self_indices).view(n_images, 1).long(), indices), dim=1)
-        assert indices.size() == (n_images, per_image_dim)
-
+        if neighbor_type == 'closest':
+            D, I = self.index.search(img_fc_feat, k_neighbors)
+            n_images_, k_ = D.shape
+            assert n_images == n_images_
+            # n_images x per_image_dim
+            indices = torch.tensor([[self.loader_ixs[i] for i in inds] for inds in I]).long()
+            if include_self:
+                indices = torch.cat((torch.tensor(self_indices).view(n_images, 1).long(), indices), dim=1)
+            assert indices.size() == (n_images, per_image_dim)
+        elif neighbor_type == 'batch':
+            # TODO: just use the batch without reloading from the loader
+            if self_indices is None:
+                raise ValueError("must pass self_indices")
+            indices = [
+                torch.tensor(self_indices).flatten().roll(-i, dims=(0,))
+                for i in range(len(self_indices))
+            ]
+            assert len(indices) == n_images
+            # [0,1,2] -> [[0,1,2],[1,0,2],[2,1,0]]
+            indices = torch.stack(indices, 0)
+            if not include_self:
+                indices = indices[:,1:]
+        elif neighbor_type == 'random':
+            indices = torch.tensor(np.random.choice(self.loader_ixs, (n_images, k_neighbors))).long()
+            if include_self:
+                indices = torch.cat((torch.tensor(self_indices).view(n_images, 1).long(), indices), dim=1)
+            assert indices.size() == (n_images, per_image_dim)
+        else:
+            raise ValueError(f"invalid neighbor_type {neighbor_type}")
         data = [loader.dataset[ix, 0, False] for ix in indices.view(-1)]
         batch = loader.dataset.collate_func(data, self.split)
         split_batch = {}

@@ -53,12 +53,19 @@ class LossWrapper(torch.nn.Module):
             # att_feats: batch_size x (n_distractors+1) x n_obj x d
             # labels: batch_size x (n_distractors+1) x num_captions x T
             # att_masks: batch_size x (n_distractors+1) x n_obj
-            num_distractors = opt.pragmatic_distractors
             alpha = opt.pragmatic_incremental_alpha
             batch_size, per_image_dim, _ = fc_feats.size()
             batch_size_, per_image_dim_, num_captions, T = labels.size()
             assert batch_size == batch_size_ and per_image_dim == per_image_dim_
 
+            if opt.pragmatic_distractor_candidate_type in ['closest', 'random']:
+                num_distractors = opt.pragmatic_distractors
+            elif opt.pragmatic_distractor_candidate_type == 'batch':
+                num_distractors = batch_size - 1
+            else:
+                raise ValueError(
+                    f"invalid --pragmatic_distractor_candidate_type {opt.pragmatic_distractor_candidate_type}"
+                )
             assert num_distractors+1 == per_image_dim
 
             fc_feats_target, fc_feats_distr = fc_feats.split((1, num_distractors), dim=1)
@@ -80,18 +87,20 @@ class LossWrapper(torch.nn.Module):
             outs = outs.view(batch_size, per_image_dim, num_captions, T-1, -1)
             V = outs.size(-1)
 
+            num_choices = 2
+
             outs_target, outs_distractors = outs.split((1, num_distractors), dim=1)
             outs_target = outs_target.expand_as(outs_distractors)
 
-            # batch_size x (n_distractors) x num_captions x 2 x T-1 x V
+            # batch_size x (n_distractors) x num_captions x num_choices x T-1 x V
             outs_comparative = torch.stack((outs_target, outs_distractors), 3)
             assert outs_comparative.size(-2) == T-1
 
             labels_from_target_expanded = labels_from_target.unsqueeze(1).unsqueeze(3).unsqueeze(4)\
-                .expand(batch_size, num_distractors, num_captions, 2, 1, T)
+                .expand(batch_size, num_distractors, num_captions, num_choices, 1, T)
 
             masks_from_target_expanded = masks_from_target.unsqueeze(1).unsqueeze(3) \
-                .expand(batch_size, num_distractors, num_captions, 2, T)
+                .expand(batch_size, num_distractors, num_captions, num_choices, T)
 
             def select_label(tensor, t):
                 return tensor.gather(-1, labels_from_target_expanded[...,t]).squeeze(-1)
@@ -100,11 +109,11 @@ class LossWrapper(torch.nn.Module):
             log_priors = torch.full(outs_comparative.size()[:-2], 1./outs_comparative.size(3)).log().to(outs_comparative)
 
             log_s1_sums = torch.zeros_like(log_priors)
-            # batch_size x (n_distractors) x num_captions x 2
+            # batch_size x (n_distractors) x num_captions x num_choices
             word_counts = torch.zeros_like(log_s1_sums)
 
             for t in range(T-1):
-                # batch_size x (n_distractors) x num_captions x 2 x V
+                # batch_size x (n_distractors) x num_captions x num_choices x V
                 log_s0 = outs_comparative[...,t,:]
                 log_priors_expanded = log_priors.unsqueeze(-1).expand_as(log_s0)
                 log_l0 = (log_s0 + log_priors_expanded).log_softmax(3)

@@ -358,7 +358,16 @@ class AttModel(CaptionModel):
         batch_size = fc_feats.size(0)
         device = fc_feats.device
 
-        candidate_distractors = opt['pragmatic_distractors']
+        candidate_type = opt['pragmatic_distractor_candidate_type']
+
+        if candidate_type in ['closest', 'random']:
+            candidate_distractors = opt['pragmatic_distractors']
+        elif candidate_type == 'batch':
+            candidate_distractors = batch_size - 1
+        else:
+            raise ValueError(
+                f"invalid --pragmatic_distractor_candidate_type {candidate_type}"
+            )
 
         neighbor_batch = nearest_neighbor_index.get_neighbor_batch(
             loader, fc_feats.cpu().numpy(), k_neighbors=candidate_distractors,

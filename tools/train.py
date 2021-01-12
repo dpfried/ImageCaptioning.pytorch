@@ -191,7 +191,8 @@ def train(opt):
                 ixs = [d['ix'] for d in data['infos']]
                 neighbor_data = loader.indices['train'].get_neighbor_batch(
                     loader, data['fc_feats'].numpy(), opt.pragmatic_distractors,
-                    include_self=True, self_indices=ixs
+                    include_self=True, self_indices=ixs,
+                    neighbor_type=opt.pragmatic_distractor_candidate_type
                 )
                 data_to_use = neighbor_data
             else:
