@@ -58,6 +58,24 @@ def getCOCO(dataset):
         annFile = 'data/f30k_captions4eval.json'
     return COCO(annFile)
 
+def prediction_filename(eval_kwargs: dict):
+    id = eval_kwargs['id']
+    split = eval_kwargs['split']
+    pred_fn = os.path.join('eval_results/', '.saved_pred_'+ id + '_' + split + '.pth')
+    return pred_fn
+
+def save_predictions(eval_kwargs: dict, predictions, n_predictions, verbose_predictions):
+    split = eval_kwargs.get('split', 'val')
+    verbose_pred_fname = os.path.join('eval_results/', f"pred_verbose_{eval_kwargs['id']}_{split}.pth")
+    if not os.path.isdir('eval_results'):
+        os.mkdir('eval_results')
+    pred_fn = prediction_filename(eval_kwargs)
+    print(f'saving to {pred_fn}')
+    torch.save((predictions, n_predictions), pred_fn)
+
+    if eval_kwargs.get('save_verbose_predictions', 0):
+        print(f"saving verbose predictions to {verbose_pred_fname}")
+        torch.save(verbose_predictions, verbose_pred_fname)
 
 def language_eval(dataset, preds, preds_n, eval_kwargs, split):
     model_id = eval_kwargs['id']
@@ -287,12 +305,16 @@ def pragmatic_choose_from_candidates(instance_candidates: dict, eval_kwargs):
     else:
         raise NotImplementedError()
     prediction['caption'] = caption
-    return prediction
+    # TODO: copy scores to this
+    verbose_prediction = prediction
+    return prediction, verbose_prediction
+
 
 def clip_choose_from_candidates(instance_candidates: dict, eval_kwargs, clip_model, clip_transform):
     from clip.clip import tokenize
     device = eval_kwargs.get('device', 'cuda')
     s0_weight = eval_kwargs['clip_s0_weight']
+    save_verbose_predictions = eval_kwargs.get('save_verbose_predictions', 0)
     if not (0.0 <= s0_weight <= 1.0):
         raise ValueError(f"--clip_s0_weight {s0_weight} must be in [0, 1]")
 
@@ -306,8 +328,8 @@ def clip_choose_from_candidates(instance_candidates: dict, eval_kwargs, clip_mod
     nonempty_captions = list(nonempty_captions)
     nonempty_indices = torch.tensor(nonempty_indices).long()
 
-    s0_scores = torch.tensor(instance_candidates['target_s0_scores'])
-    s0_scores = s0_scores[nonempty_indices]
+    s0_scores_full = torch.tensor(instance_candidates['target_s0_scores'])
+    s0_scores = s0_scores_full[nonempty_indices]
 
     image = clip_transform(Image.open(target_path)).unsqueeze(0).to(device)
     text = tokenize(nonempty_captions).to(device)
@@ -322,7 +344,20 @@ def clip_choose_from_candidates(instance_candidates: dict, eval_kwargs, clip_mod
     best_score, best_cap = joint_scores.max(-1)
     caption = nonempty_captions[best_cap]
     prediction['caption'] = caption
-    return prediction
+
+    if save_verbose_predictions:
+        clip_log_probs_full = torch.zeros_like(s0_scores_full)
+        clip_log_probs_full[nonempty_indices] = clip_log_probs.float()
+
+        joint_scores_full = torch.zeros_like(s0_scores_full)
+        joint_scores_full[nonempty_indices] = joint_scores
+
+        verbose_prediction = prediction.copy()
+
+        verbose_prediction['clip_log_probs'] = clip_log_probs_full.detach().cpu().numpy()
+        verbose_prediction['joint_scores'] = joint_scores_full.detach().cpu().numpy()
+        verbose_prediction['distinct_candidates'] = len(set(candidate_captions))
+    return prediction, verbose_prediction
 
 def mbr_choose_from_candidates(instance_candidates: dict, eval_kwargs, sent_rep_model, sent_rep_tokenizer):
     device = eval_kwargs.get('device', 'cuda')
@@ -355,7 +390,9 @@ def mbr_choose_from_candidates(instance_candidates: dict, eval_kwargs, sent_rep_
     best_score, best_cap = joint_scores.max(-1)
     caption = nonempty_captions[best_cap]
     prediction['caption'] = caption
-    return prediction
+    # TODO: add scores to this
+    verbose_prediction = prediction
+    return prediction, verbose_prediction
 
 
 def eval_split_from_serialized(path, eval_kwargs={}):
@@ -381,15 +418,27 @@ def eval_split_from_serialized(path, eval_kwargs={}):
 
     candidates = torch.load(path)
     predictions = []
+    verbose_predictions = []
+
+    num_images = eval_kwargs.get('num_images', None)
+    if num_images is not None:
+        if num_images > len(candidates):
+            raise ValueError(f"--num_images={num_images} but only {len(candidates)} images found in serialized file {path}")
+        candidates = candidates[:num_images]
+
     for instance_candidates in tqdm.tqdm(candidates, ncols=80):
         if mbr_inference:
-            prediction = mbr_choose_from_candidates(instance_candidates, eval_kwargs, bert_model, bert_tokenizer)
+            prediction, verbose_prediction = mbr_choose_from_candidates(instance_candidates, eval_kwargs, bert_model, bert_tokenizer)
         elif clip_inference:
-            prediction = clip_choose_from_candidates(instance_candidates, eval_kwargs, clip_model, clip_transform)
+            prediction, verbose_prediction = clip_choose_from_candidates(
+                instance_candidates, eval_kwargs, clip_model, clip_transform,
+            )
         else:
-            prediction = pragmatic_choose_from_candidates(instance_candidates, eval_kwargs)
+            prediction, verbose_prediction = pragmatic_choose_from_candidates(instance_candidates, eval_kwargs)
         predictions.append(prediction)
-    return predictions
+        verbose_predictions.append(verbose_prediction)
+
+    return predictions, verbose_predictions
 
 def eval_split(model, crit, loader, eval_kwargs={}):
     verbose = eval_kwargs.get('verbose', True)
@@ -507,15 +556,8 @@ def eval_split(model, crit, loader, eval_kwargs={}):
     lang_stats = None
     if len(n_predictions) > 0 and 'perplexity' in n_predictions[0]:
         n_predictions = sorted(n_predictions, key=lambda x: x['perplexity'])
-    if not os.path.isdir('eval_results'):
-        os.mkdir('eval_results')
-    pred_fn = os.path.join('eval_results/', '.saved_pred_'+ eval_kwargs['id'] + '_' + split + '.pth')
-    print(f'saving to {pred_fn}')
-    torch.save((predictions, n_predictions), pred_fn)
-    verbose_pred_fname = os.path.join('eval_results/', f"pred_verbose_{eval_kwargs['id']}_{split}.pth")
-    if eval_kwargs.get('save_verbose_predictions', 0):
-        print(f"saving verbose predictions to {verbose_pred_fname}")
-        torch.save(verbose_predictions, verbose_pred_fname)
+
+    save_predictions(eval_kwargs, predictions, n_predictions, verbose_predictions)
     if lang_eval == 1:
         lang_stats = language_eval(dataset, predictions, n_predictions, eval_kwargs, split)
 
@@ -541,11 +583,13 @@ def generate_caption_candidates(model, input_data, eval_kwargs={}, loader=None):
     n_imgs = fc_feats.size(0)
 
     tmp_eval_kwargs = eval_kwargs.copy()
-    if sample_n_method in ['bs', 'contrastive_bs']:
+    if sample_n_method in ['bs', 'contrastive_bs', 'gumbel_bs']:
         # case 1 sample_n == beam size
         contrastive = sample_n_method == 'contrastive_bs'
         if contrastive:
             tmp_eval_kwargs['sample_method'] = 'contrastive_beam_search'
+        if sample_n_method == 'gumbel_bs':
+            tmp_eval_kwargs['sample_method'] = 'gumbel_beam_search'
         tmp_eval_kwargs.update({'sample_n': 1, 'beam_size': sample_n, 'group_size': 1}) # randomness from softmax
         with torch.no_grad():
             model(fc_feats, att_feats, att_masks, opt=tmp_eval_kwargs, mode='sample', data=data, loader=loader)
@@ -555,7 +599,7 @@ def generate_caption_candidates(model, input_data, eval_kwargs={}, loader=None):
             beams = [model.done_beams[k][_]['seq'] for _ in range(sample_n)]
             stacked_beams = pad_sequence(beams, batch_first=True, padding_value=0)
             seqs.extend(beams)
-            _log_prob = torch.stack([model.done_beams[k][i]['log_prob'] for i in range(sample_n)]).flatten()
+            _log_prob = torch.stack([model.done_beams[k][i]['unaug_log_prob'] for i in range(sample_n)]).flatten()
             log_probs.append(_log_prob)
             _sents = utils.decode_sequence(model.vocab, stacked_beams)
             for sent_ix, sent in enumerate(_sents):

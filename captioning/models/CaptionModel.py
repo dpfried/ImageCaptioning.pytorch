@@ -13,6 +13,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.distributions import Gumbel
 from torch.autograd import *
 from ..utils import misc as utils
 from . import utils as model_utils
@@ -20,7 +21,7 @@ from . import utils as model_utils
 import einops
 
 # does one step of classical beam search
-def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprobs, beam_logprobs_sum, state, log_l1=None):
+def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprobs, beam_logprobs_sum, beam_unaug_logprobs_sum, state, log_l1=None):
     #INPUTS:
     #N: batch size
     #b: beam size
@@ -44,6 +45,7 @@ def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprob
     if t == 0:
         assert logprobs.shape[1] == 1
         beam_logprobs_sum = beam_logprobs_sum[:, :1]
+        beam_unaug_logprobs_sum = beam_unaug_logprobs_sum[:, :1]
     candidate_logprobs = beam_logprobs_sum.unsqueeze(-1) + logprobs # beam_logprobs_sum Nxb logprobs is NxbxV
     ys, ix = torch.sort(candidate_logprobs.reshape(candidate_logprobs.shape[0], -1), -1, True)
     ys, ix = ys[:,:beam_size], ix[:,:beam_size]
@@ -83,6 +85,8 @@ def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprob
     beam_seq = torch.cat([beam_seq, selected_ix.unsqueeze(-1)], -1) # beam_seq Nxbxl
     beam_logprobs_sum = beam_logprobs_sum.gather(1, beam_ix) + \
                         logprobs.reshape(batch_size, -1).gather(1, ix)
+    beam_unaug_logprobs_sum = beam_unaug_logprobs_sum.gather(1, beam_ix) + \
+                        unaug_logprobs.reshape(batch_size, -1).gather(1, ix)
     assert (beam_logprobs_sum == ys).all()
     _tmp_beam_logprobs = unaug_logprobs[state_ix].reshape(batch_size, -1, vocab_size)
     beam_logprobs = unaug_logprobs.reshape(batch_size, -1, vocab_size).gather(1, beam_ix.unsqueeze(-1).expand(-1, -1, vocab_size)) # NxbxV
@@ -98,9 +102,9 @@ def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprob
     state = new_state
     if log_l1 is not None:
         # log_priors: batch_size x per_image_dim x beam_size
-        return beam_seq,beam_seq_logprobs,beam_logprobs_sum,state,new_priors
+        return beam_seq,beam_seq_logprobs,beam_logprobs_sum,beam_unaug_logprobs_sum,state,new_priors
     else:
-        return beam_seq,beam_seq_logprobs,beam_logprobs_sum,state
+        return beam_seq,beam_seq_logprobs,beam_logprobs_sum,beam_unaug_logprobs_sum,state
 
 class CaptionModel(nn.Module):
     def __init__(self):
@@ -151,12 +155,15 @@ class CaptionModel(nn.Module):
         length_penalty = utils.penalty_builder(opt.get('length_penalty', ''))
         bdash = beam_size // group_size # beam per group
 
+        gumbel_noise = kwargs.get('gumbel_noise', False)
+
         batch_size = init_logprobs.shape[0]
         device = init_logprobs.device
         # INITIALIZATIONS
         beam_seq_table = [torch.LongTensor(batch_size, bdash, 0).to(device) for _ in range(group_size)]
         beam_seq_logprobs_table = [torch.FloatTensor(batch_size, bdash, 0, self.vocab_size + 1).to(device) for _ in range(group_size)]
         beam_logprobs_sum_table = [torch.zeros(batch_size, bdash).to(device) for _ in range(group_size)]
+        beam_unaug_logprobs_sum_table = [torch.zeros(batch_size, bdash).to(device) for _ in range(group_size)]
 
         # logprobs # logprobs predicted in last time step, shape (beam_size, vocab_size+1)
         done_beams_table = [[[] for __ in range(group_size)] for _ in range(batch_size)]
@@ -193,19 +200,24 @@ class CaptionModel(nn.Module):
                     # the unaugmented ones for sorting the candidates in the end. # for historical
                     # reasons :-)
                     logprobs, unaug_logprobs = add_diversity(beam_seq_table,logprobs,t,divm,diversity_lambda,bdash)
+                    if gumbel_noise:
+                        dist = Gumbel(logprobs, 1.0)
+                        logprobs = dist.sample((1,)).squeeze(0)
 
                     # infer new beams
                     beam_seq_table[divm],\
                     beam_seq_logprobs_table[divm],\
-                    beam_logprobs_sum_table[divm],\
+                    beam_logprobs_sum_table[divm], \
+                    beam_unaug_logprobs_sum_table[divm], \
                     state_table[divm] = beam_step(logprobs,
-                                                unaug_logprobs,
-                                                bdash,
-                                                t-divm,
-                                                beam_seq_table[divm],
-                                                beam_seq_logprobs_table[divm],
-                                                beam_logprobs_sum_table[divm],
-                                                state_table[divm])
+                                                  unaug_logprobs,
+                                                  bdash,
+                                                  t-divm,
+                                                  beam_seq_table[divm],
+                                                  beam_seq_logprobs_table[divm],
+                                                  beam_logprobs_sum_table[divm],
+                                                  beam_unaug_logprobs_sum_table[divm],
+                                                  state_table[divm])
 
                     # if time's up... or if end token is reached then copy beams
                     for b in range(batch_size):
@@ -223,6 +235,7 @@ class CaptionModel(nn.Module):
                                     'p': beam_logprobs_sum_table[divm][b, vix].item(),
                                     # same as p but more descriptively named and we can backprop through it
                                     'log_prob': beam_logprobs_sum_table[divm][b, vix].clone(),
+                                    'unaug_log_prob': beam_unaug_logprobs_sum_table[divm][b, vix].clone(),
                                 }
                                 final_beam['p'] = length_penalty(t-divm+1, final_beam['p'])
                                 done_beams_table[b][divm].append(final_beam)
@@ -349,15 +362,17 @@ class CaptionModel(nn.Module):
             beam_seq_table, \
             beam_seq_logprobs_table, \
             beam_logprobs_sum_table, \
+            beam_unaug_logprobs_sum_table, \
             state_table_rearranged, \
             log_priors = beam_step(logprobs,
-                                    unaug_logprobs,
-                                    beam_size,
-                                    t,
-                                    beam_seq_table,
-                                    beam_seq_logprobs_table,
-                                    beam_logprobs_sum_table,
-                                    state_table_rearranged, log_l1=log_l1)
+                                   unaug_logprobs,
+                                   beam_size,
+                                   t,
+                                   beam_seq_table,
+                                   beam_seq_logprobs_table,
+                                   beam_logprobs_sum_table,
+                                   beam_unaug_logprobs_sum_table,
+                                   state_table_rearranged, log_l1=log_l1)
             # don't use this_state_beam_size because in t0 the beam expands to the full beam_size (from 1)
             state_table = tuple(
                 einops.rearrange(

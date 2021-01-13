@@ -307,7 +307,7 @@ class AttModel(CaptionModel):
         return seq, seqLogprobs
 
 
-    def _sample_beam(self, fc_feats, att_feats, att_masks=None, opt={}):
+    def _sample_beam(self, fc_feats, att_feats, att_masks=None, opt={}, gumbel_noise=False):
         beam_size = opt.get('beam_size', 10)
         group_size = opt.get('group_size', 1)
         sample_n = opt.get('sample_n', 10)
@@ -333,7 +333,8 @@ class AttModel(CaptionModel):
         p_fc_feats, p_att_feats, pp_att_feats, p_att_masks = utils.repeat_tensors(beam_size,
             [p_fc_feats, p_att_feats, pp_att_feats, p_att_masks]
         )
-        self.done_beams = self.beam_search(state, logprobs, p_fc_feats, p_att_feats, pp_att_feats, p_att_masks, opt=opt)
+        self.done_beams = self.beam_search(state, logprobs, p_fc_feats, p_att_feats, pp_att_feats, p_att_masks,
+                                           opt=opt, gumbel_noise=gumbel_noise)
         for k in range(batch_size):
             if sample_n == beam_size:
                 for _n in range(sample_n):
@@ -372,6 +373,7 @@ class AttModel(CaptionModel):
         neighbor_batch = nearest_neighbor_index.get_neighbor_batch(
             loader, fc_feats.cpu().numpy(), k_neighbors=candidate_distractors,
             include_self=True, self_indices=[data['infos'][img_ix]['ix'] for img_ix in range(batch_size)],
+            neighbor_type=candidate_type,
         )
 
         # assert torch.allclose(neighbor_batch['fc_feats'][:,0].cpu(), fc_feats.cpu())
@@ -499,8 +501,9 @@ class AttModel(CaptionModel):
         decoding_constraint = opt.get('decoding_constraint', 0)
         block_trigrams = opt.get('block_trigrams', 0)
         remove_bad_endings = opt.get('remove_bad_endings', 0)
-        if beam_size > 1 and sample_method in ['greedy', 'beam_search']:
-            return self._sample_beam(fc_feats, att_feats, att_masks, opt)
+        if beam_size > 1 and sample_method in ['greedy', 'beam_search', 'gumbel_beam_search']:
+            gumbel_noise = sample_method == 'gumbel_beam_search'
+            return self._sample_beam(fc_feats, att_feats, att_masks, opt, gumbel_noise=gumbel_noise)
         if sample_method in ['contrastive_beam_search']:
             nearest_neighbor_index = loader.indices[opt['pragmatic_distractor_split']]
             return self._sample_contrastive_beam(

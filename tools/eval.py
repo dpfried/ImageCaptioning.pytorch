@@ -69,7 +69,7 @@ if __name__ == "__main__":
 
     vocab = infos['vocab'] # ix -> word mapping
 
-    pred_fn = os.path.join('eval_results/', '.saved_pred_'+ opt.id + '_' + opt.split + '.pth')
+    pred_fn = eval_utils.prediction_filename(vars(opt))
     result_fn = os.path.join('eval_results/', opt.id + '_' + opt.split + '.json')
 
     def print_lang_stats(lang_stats):
@@ -88,12 +88,12 @@ if __name__ == "__main__":
     if opt.from_serialized_candidates or opt.only_lang_eval == 1 or (not opt.force and os.path.isfile(pred_fn)):
         # if results existed, then skip, unless force is on
         if opt.from_serialized_candidates:
-            predictions = eval_utils.eval_split_from_serialized(
+            predictions, verbose_predictions = eval_utils.eval_split_from_serialized(
                 opt.from_serialized_candidates, vars(opt)
             )
             n_predictions = []
-            print(f'saving to {pred_fn}')
-            torch.save((predictions, n_predictions), pred_fn)
+            # TODO: deduplicate this code with the code in eval_utils
+            eval_utils.save_predictions(vars(opt), predictions, n_predictions, verbose_predictions)
         else:
             if not opt.force:
                 try:

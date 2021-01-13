@@ -33,6 +33,8 @@ def parse(log_file):
     except Exception as e:
         print(e)
         return None
+    if not stats_by_iter:
+        return None
     return stats_by_iter
 
 if __name__ == "__main__":
@@ -45,6 +47,7 @@ if __name__ == "__main__":
         stats_by_iter = parse(log_file)
         if stats_by_iter is None:
             print("error parsing {}".format(log_file))
+            continue
         df = pandas.DataFrame(stats_by_iter).transpose()
         dfs_by_name[log_file] = df
         last_stats = df[DEFAULT_STATS].iloc[-1]
