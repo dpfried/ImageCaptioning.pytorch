@@ -354,9 +354,12 @@ def clip_choose_from_candidates(instance_candidates: dict, eval_kwargs, clip_mod
 
         verbose_prediction = prediction.copy()
 
-        verbose_prediction['clip_log_probs'] = clip_log_probs_full.detach().cpu().numpy()
+        verbose_prediction['s0_scores'] = instance_candidates['target_s0_scores']
+        verbose_prediction['clip_scores'] = clip_log_probs_full.detach().cpu().numpy()
         verbose_prediction['joint_scores'] = joint_scores_full.detach().cpu().numpy()
         verbose_prediction['distinct_candidates'] = len(set(candidate_captions))
+    else:
+        verbose_prediction = None
     return prediction, verbose_prediction
 
 def mbr_choose_from_candidates(instance_candidates: dict, eval_kwargs, sent_rep_model, sent_rep_tokenizer):
