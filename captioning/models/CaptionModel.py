@@ -90,10 +90,11 @@ def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprob
                         logprobs.reshape(batch_size, -1).gather(1, ix)
     beam_unaug_logprobs_sum = beam_unaug_logprobs_sum.gather(1, beam_ix) + \
                         unaug_logprobs.reshape(batch_size, -1).gather(1, ix)
-    assert (beam_logprobs_sum == ys).all()
     _tmp_beam_logprobs = unaug_logprobs[state_ix].reshape(batch_size, -1, vocab_size)
     beam_logprobs = unaug_logprobs.reshape(batch_size, -1, vocab_size).gather(1, beam_ix.unsqueeze(-1).expand(-1, -1, vocab_size)) # NxbxV
-    assert (_tmp_beam_logprobs == beam_logprobs).all()
+    if not use_token_only:
+        assert (beam_logprobs_sum == ys).all()
+        assert (_tmp_beam_logprobs == beam_logprobs).all()
     beam_seq_logprobs = torch.cat([
         beam_seq_logprobs,
         beam_logprobs.reshape(batch_size, -1, 1, vocab_size)], 2)
