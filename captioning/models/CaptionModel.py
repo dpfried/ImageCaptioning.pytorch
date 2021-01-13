@@ -21,7 +21,7 @@ from . import utils as model_utils
 import einops
 
 # does one step of classical beam search
-def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprobs, beam_logprobs_sum, beam_unaug_logprobs_sum, state, log_l1=None):
+def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprobs, beam_logprobs_sum, beam_unaug_logprobs_sum, state, log_l1=None, use_token_only=False):
     #INPUTS:
     #N: batch size
     #b: beam size
@@ -46,7 +46,10 @@ def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprob
         assert logprobs.shape[1] == 1
         beam_logprobs_sum = beam_logprobs_sum[:, :1]
         beam_unaug_logprobs_sum = beam_unaug_logprobs_sum[:, :1]
-    candidate_logprobs = beam_logprobs_sum.unsqueeze(-1) + logprobs # beam_logprobs_sum Nxb logprobs is NxbxV
+    if use_token_only:
+        candidate_logprobs = logprobs
+    else:
+        candidate_logprobs = beam_logprobs_sum.unsqueeze(-1) + logprobs # beam_logprobs_sum Nxb logprobs is NxbxV
     ys, ix = torch.sort(candidate_logprobs.reshape(candidate_logprobs.shape[0], -1), -1, True)
     ys, ix = ys[:,:beam_size], ix[:,:beam_size]
     beam_ix = ix // vocab_size # Nxb which beam
@@ -217,7 +220,7 @@ class CaptionModel(nn.Module):
                                                   beam_seq_logprobs_table[divm],
                                                   beam_logprobs_sum_table[divm],
                                                   beam_unaug_logprobs_sum_table[divm],
-                                                  state_table[divm])
+                                                  state_table[divm], use_token_only=gumbel_noise)
 
                     # if time's up... or if end token is reached then copy beams
                     for b in range(batch_size):
