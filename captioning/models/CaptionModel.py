@@ -46,10 +46,7 @@ def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprob
         assert logprobs.shape[1] == 1
         beam_logprobs_sum = beam_logprobs_sum[:, :1]
         beam_unaug_logprobs_sum = beam_unaug_logprobs_sum[:, :1]
-    if use_token_only:
-        candidate_logprobs = logprobs
-    else:
-        candidate_logprobs = beam_logprobs_sum.unsqueeze(-1) + logprobs # beam_logprobs_sum Nxb logprobs is NxbxV
+    candidate_logprobs = beam_logprobs_sum.unsqueeze(-1) + logprobs # beam_logprobs_sum Nxb logprobs is NxbxV
     ys, ix = torch.sort(candidate_logprobs.reshape(candidate_logprobs.shape[0], -1), -1, True)
     ys, ix = ys[:,:beam_size], ix[:,:beam_size]
     beam_ix = ix // vocab_size # Nxb which beam
@@ -92,7 +89,9 @@ def beam_step(logprobs, unaug_logprobs, beam_size, t, beam_seq, beam_seq_logprob
                         unaug_logprobs.reshape(batch_size, -1).gather(1, ix)
     _tmp_beam_logprobs = unaug_logprobs[state_ix].reshape(batch_size, -1, vocab_size)
     beam_logprobs = unaug_logprobs.reshape(batch_size, -1, vocab_size).gather(1, beam_ix.unsqueeze(-1).expand(-1, -1, vocab_size)) # NxbxV
-    if not use_token_only:
+    if use_token_only:
+        beam_logprobs_sum = torch.zeros_like(beam_logprobs_sum)
+    else:
         assert (beam_logprobs_sum == ys).all()
         assert (_tmp_beam_logprobs == beam_logprobs).all()
     beam_seq_logprobs = torch.cat([
