@@ -359,21 +359,22 @@ class AttModel(CaptionModel):
         batch_size = fc_feats.size(0)
         device = fc_feats.device
 
-        candidate_type = opt['pragmatic_distractor_candidate_type']
-
-        if candidate_type in ['closest', 'random']:
-            candidate_distractors = opt['pragmatic_distractors']
-        elif candidate_type == 'batch':
-            candidate_distractors = batch_size - 1
-        else:
-            raise ValueError(
-                f"invalid --pragmatic_distractor_candidate_type {candidate_type}"
-            )
+        candidate_types = opt['pragmatic_distractor_candidate_types']
+        candidate_distractors = 0
+        for dct in candidate_types:
+            if dct in ['closest', 'random']:
+                candidate_distractors += opt['pragmatic_distractors']
+            elif dct == 'batch':
+                candidate_distractors += batch_size - 1
+            else:
+                raise ValueError(
+                    f"invalid --pragmatic_distractor_candidate_types {opt['pragmatic_distractor_candidate_types']}"
+                )
 
         neighbor_batch = nearest_neighbor_index.get_neighbor_batch(
-            loader, fc_feats.cpu().numpy(), k_neighbors=candidate_distractors,
+            loader, fc_feats.cpu().numpy(), k_neighbors=opt['pragmatic_distractors'],
             include_self=True, self_indices=[data['infos'][img_ix]['ix'] for img_ix in range(batch_size)],
-            neighbor_type=candidate_type,
+            neighbor_types=candidate_types,
         )
         # assert torch.allclose(neighbor_batch['fc_feats'][:,0].cpu(), fc_feats.cpu())
         # neighbor_batch['fc_feats']: batch_size x k_neighbors+1 x d

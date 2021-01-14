@@ -58,14 +58,16 @@ class LossWrapper(torch.nn.Module):
             batch_size_, per_image_dim_, num_captions, T = labels.size()
             assert batch_size == batch_size_ and per_image_dim == per_image_dim_
 
-            if opt.pragmatic_distractor_candidate_type in ['closest', 'random']:
-                num_distractors = opt.pragmatic_distractors
-            elif opt.pragmatic_distractor_candidate_type == 'batch':
-                num_distractors = batch_size - 1
-            else:
-                raise ValueError(
-                    f"invalid --pragmatic_distractor_candidate_type {opt.pragmatic_distractor_candidate_type}"
-                )
+            num_distractors = 0
+            for dct in opt.pragmatic_distractor_candidate_types:
+                if dct in ['closest', 'random']:
+                    num_distractors += opt.pragmatic_distractors
+                elif dct == 'batch':
+                    num_distractors += batch_size - 1
+                else:
+                    raise ValueError(
+                        f"invalid --pragmatic_distractor_candidate_types {opt.pragmatic_distractor_candidate_types}"
+                    )
             assert num_distractors+1 == per_image_dim
 
             fc_feats_target, fc_feats_distr = fc_feats.split((1, num_distractors), dim=1)

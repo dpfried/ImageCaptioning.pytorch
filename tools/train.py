@@ -140,6 +140,7 @@ def train(opt):
                 break
 
             if epoch_done:
+                force_save_this_epoch = False
                 if not opt.noamopt and not opt.reduce_on_plateau:
                     # Assign the learning rate
                     if epoch > opt.learning_rate_decay_start and opt.learning_rate_decay_start >= 0:
@@ -174,6 +175,9 @@ def train(opt):
                 else:
                     contrastive_flag = False
 
+                if opt.contrastive_after != -1 and epoch == opt.contrastive_after - 1:
+                    force_save_this_epoch = True
+
                 epoch_done = False
                     
             start = time.time()
@@ -192,7 +196,7 @@ def train(opt):
                 neighbor_data = loader.indices['train'].get_neighbor_batch(
                     loader, data['fc_feats'].cpu().numpy(), opt.pragmatic_distractors,
                     include_self=True, self_indices=ixs,
-                    neighbor_type=opt.pragmatic_distractor_candidate_type
+                    neighbor_types=opt.pragmatic_distractor_candidate_types
                 )
                 data_to_use = neighbor_data
             else:
@@ -261,7 +265,7 @@ def train(opt):
             
             # make evaluation on validation set, and save model
             if (iteration % opt.save_checkpoint_every == 0 and not opt.save_every_epoch) or \
-                (epoch_done and opt.save_every_epoch):
+                (epoch_done and (opt.save_every_epoch or force_save_this_epoch)):
                 # eval model
                 eval_kwargs = {'split': 'val',
                                 'dataset': opt.input_json}
@@ -299,7 +303,7 @@ def train(opt):
                 utils.save_checkpoint(opt, model, infos, optimizer, histories)
                 if opt.save_history_ckpt:
                     utils.save_checkpoint(opt, model, infos, optimizer,
-                        append=str(epoch) if opt.save_every_epoch else str(iteration))
+                        append=str(epoch) if (opt.save_every_epoch or force_save_this_epoch) else str(iteration))
 
                 if best_flag:
                     utils.save_checkpoint(opt, model, infos, optimizer, append='best')
