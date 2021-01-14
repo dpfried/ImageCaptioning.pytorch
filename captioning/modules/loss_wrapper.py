@@ -148,7 +148,7 @@ class LossWrapper(torch.nn.Module):
             if opt.contrastive_em == 'hard':
                 obj_log_s1 = joint_log_s1.max(1).values
             elif opt.contrastive_em == 'soft':
-                obj_log_s1 = joint_log_s1.sum(1)
+                obj_log_s1 = joint_log_s1.logsumexp(1)
 
             # TODO: this is a bit weird: scaling to be similar to the loss used in non-contrastive training, but
             #  will hopefully prevent having to mess with the LRs too much
