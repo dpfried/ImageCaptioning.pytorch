@@ -375,7 +375,6 @@ class AttModel(CaptionModel):
             include_self=True, self_indices=[data['infos'][img_ix]['ix'] for img_ix in range(batch_size)],
             neighbor_type=candidate_type,
         )
-
         # assert torch.allclose(neighbor_batch['fc_feats'][:,0].cpu(), fc_feats.cpu())
         # neighbor_batch['fc_feats']: batch_size x k_neighbors+1 x d
 
@@ -396,17 +395,17 @@ class AttModel(CaptionModel):
 
             # log p(i' | i) for target image i and distractor i'
             # batch_size x candidate_distractors
-            distractor_log_probs = self.distractor_log_probs(fc_feats_target, fc_feats_distr)
+            self.dlp = distractor_log_probs = self.distractor_log_probs(fc_feats_target, fc_feats_distr)
             distractor_lps, distractor_indices = distractor_log_probs.topk(num_distractors, dim=-1)
 
-            new_infos = []
+            distractor_infos = []
             for b in range(batch_size):
                 # append info for target
-                new_infos.append(infos[b*(1+candidate_distractors)])
+                distractor_infos.append(infos[b*(1+candidate_distractors)])
                 for ix in distractor_indices[b]:
                     # add ix.item()+1 because we topk'd over distractors only
-                    new_infos.append(infos[b*(1+candidate_distractors) + ix.item() + 1])
-            assert len(new_infos) == batch_size * (num_distractors+1)
+                    distractor_infos.append(infos[b*(1+candidate_distractors) + ix.item() + 1])
+            assert len(distractor_infos) == batch_size * (num_distractors+1)
 
             fc_feats_distr = fc_feats_distr.gather(
                 1, distractor_indices.unsqueeze(-1).expand(-1,-1,fc_feats_distr.size(-1))
@@ -423,10 +422,16 @@ class AttModel(CaptionModel):
                 att_masks = torch.cat((att_masks_target, att_masks_distr), 1)
         else:
             num_distractors = candidate_distractors
+            distractor_infos = infos
         per_image_dim = num_distractors + 1
 
         self.neighbor_infos = [
-            infos[ix:ix+per_image_dim]
+            # exclude the self
+            infos[ix+1:ix+candidate_distractors+1]
+            for ix in range(0, batch_size*(candidate_distractors+1), candidate_distractors+1)
+        ]
+        self.distractor_infos = [
+            distractor_infos[ix:ix+per_image_dim]
             for ix in range(0, batch_size*per_image_dim, per_image_dim)
         ]
 

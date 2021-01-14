@@ -289,6 +289,7 @@ class CaptionModel(nn.Module):
         beam_seq_table = torch.LongTensor(batch_size, beam_size, 0).to(device)
         beam_seq_logprobs_table = torch.FloatTensor(batch_size, beam_size, 0, self.vocab_size + 1).to(device)
         beam_logprobs_sum_table = torch.zeros(batch_size, beam_size).to(device)
+        beam_unaug_logprobs_sum_table = torch.zeros(batch_size, beam_size).to(device)
 
         log_priors = torch.full((batch_size, per_image_dim, beam_size), 1.0 / per_image_dim).log().to(device)
 
