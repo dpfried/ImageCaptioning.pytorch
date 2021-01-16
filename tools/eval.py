@@ -59,8 +59,15 @@ if __name__ == "__main__":
     # override and collect parameters
     replace = ['input_fc_dir', 'input_att_dir', 'input_box_dir', 'input_label_h5', 'input_json', 'batch_size', 'id']
     ignore = ['start_from']
+    override = ['pragmatic_inference', 'pragmatic_distractors', 'pragmatic_distractor_split',
+                'pragmatic_s0_weight', 'pragmatic_distractor_type', 'pragmatic_distractors_to_choose',
+                'pragmatic_incremental_alpha', 'pragmatic_incremental_l1_uses',
+                'pragmatic_distractor_candidate_types', 'pragmatic_distractor_scoring',
+                'pragmatic_distractor_scoring_hidden_size']
 
     for k in vars(infos['opt']).keys():
+        if k in override:
+            setattr(opt, k, vars(infos['opt'])[k])
         if k in replace:
             setattr(opt, k, getattr(opt, k) or getattr(infos['opt'], k, ''))
         elif k not in ignore:

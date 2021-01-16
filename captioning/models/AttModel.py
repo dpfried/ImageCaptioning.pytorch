@@ -26,7 +26,6 @@ from torch.nn.utils.rnn import PackedSequence, pack_padded_sequence, pad_packed_
 import einops
 
 from .CaptionModel import CaptionModel
-from ..data.dataloader import NearestNeighborIndex
 from ..modules.distractor_scorer import DistractorScorer
 
 bad_endings = ['a','an','the','in','for','at','of','with','before','after','on','upon','near','to','is','are','am']
@@ -350,6 +349,7 @@ class AttModel(CaptionModel):
 
     def _sample_contrastive_beam(
         self, fc_feats, att_feats, att_masks=None, opt={}, data=None, nearest_neighbor_index=None, loader=None,
+        distractor_selection_method='max',
     ):
         assert nearest_neighbor_index is not None
         beam_size = opt.get('beam_size', 10)
@@ -397,7 +397,11 @@ class AttModel(CaptionModel):
             # log p(i' | i) for target image i and distractor i'
             # batch_size x candidate_distractors
             self.dlp = distractor_log_probs = self.distractor_log_probs(fc_feats_target, fc_feats_distr)
-            distractor_lps, distractor_indices = distractor_log_probs.topk(num_distractors, dim=-1)
+            if distractor_selection_method == 'max':
+                distractor_lps, distractor_indices = distractor_log_probs.topk(num_distractors, dim=-1)
+            elif distractor_selection_method == 'min':
+                distractor_lps, distractor_indices = (-distractor_log_probs).topk(num_distractors, dim=-1)
+                distractor_lps = -distractor_lps
 
             distractor_infos = []
             for b in range(batch_size):
