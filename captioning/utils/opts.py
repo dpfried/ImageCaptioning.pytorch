@@ -35,6 +35,7 @@ def parse_opt():
                         'infos.pkl'         : configuration;
                         'model.pth'         : weights
                     """)
+    parser.add_argument('--load_optimizer', type=int, default=1)
     parser.add_argument('--cached_tokens', type=str, default='coco-train-idxs',
                     help='Cached token file for calculating cider score during self critical training.')
 
@@ -380,6 +381,7 @@ def add_pragmatics_opts(parser: argparse.ArgumentParser):
 
     parser.add_argument('--pragmatic_distractor_scoring', choices=['uniform', 'mlp'], default='uniform')
     parser.add_argument('--pragmatic_distractor_scoring_hidden_size', type=int, default=200)
+    parser.add_argument('--pragmatic_distractor_scoring_use_objects', type=int, default=0)
 
 def add_mbr_opts(parser: argparse.ArgumentParser):
     parser.add_argument('--mbr_inference', type=int, default=0, help='')
