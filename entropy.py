@@ -1,5 +1,6 @@
 import torch
 from torch import nn
+from torch.distributions import Poisson, Categorical, Gumbel
 
 def int_to_bit_array(int_array, num_bits=None, base=2):
     assert int_array.dtype in [torch.int16, torch.int32, torch.int64]
@@ -26,7 +27,7 @@ def truncated_poisson_log_pmf(rate, min_support, max_support):
     if rate.dim() == 1:
         rate = rate.unsqueeze(1)
     assert rate.dim() == 2
-    ks = torch.arange(min_support, max_support+1).unsqueeze(0).expand(rate.size(0), -1)
+    ks = torch.arange(min_support, max_support).unsqueeze(0).expand(rate.size(0), -1)
     logits = ks * torch.log(rate.expand_as(ks)) - rate.expand_as(ks) - (ks + 1.0).lgamma()
     return logits.log_softmax(-1)
 
@@ -38,14 +39,16 @@ def powerset_entropy(log_X, poisson_rate=None):
     num_elts = indices.sum(-1)
     # B x D
     if poisson_rate is not None:
-        poisson_log_pmf = truncated_poisson_log_pmf(poisson_rate, 1, D)
+        poisson_log_pmf = truncated_poisson_log_pmf(poisson_rate, 0, D)
         log_PX = log_PX + poisson_log_pmf.gather(-1, num_elts-1)
     return -(log_PX.exp() * log_PX).sum(-1)
 
 def powerset_entropy_dp(log_X, poisson_rate=None):
     X = log_X.exp()
     B, D = log_X.size()
+    # alphas: entropies
     alphas = torch.zeros(B, D, D)
+    # betas: log probabilities
     betas = torch.zeros(B, D, D)
     betas[:,0] = X.cumsum(-1)
     alphas[:,0] = (X * log_X).cumsum(-1)
@@ -59,37 +62,57 @@ def powerset_entropy_dp(log_X, poisson_rate=None):
     per_size_probs = betas[:,:,-1]
     per_size_entropies = -alphas[:,:,-1]
     if poisson_rate is not None:
-        poisson_log_pmf = truncated_poisson_log_pmf(poisson_rate, 1, D)
+        poisson_log_pmf = truncated_poisson_log_pmf(poisson_rate, 0, D)
         poisson_per_size_entropies = -(poisson_log_pmf * poisson_log_pmf.exp())
         per_size_entropies = per_size_entropies * poisson_log_pmf.exp() + per_size_probs * poisson_per_size_entropies
     return per_size_entropies.sum(-1)
 
 class SetDistribution:
-    def __init__(self, logits, untruncated_poisson_mean):
-        self.logits = logits
-        self.untruncated_poisson_mean = untruncated_poisson_mean
+    PAD = -1
 
-    def entropy(self):
-        return powerset_entropy_dp(self.logits.log_softmax(-1))
+    @staticmethod
+    def entropy(logits, poisson_log_rates):
+        poisson_rates = poisson_log_rates.exp()
+        return powerset_entropy_dp(logits.log_softmax(-1), poisson_rates)
 
-    def sample(self, num_samples):
-        pass
+    @staticmethod
+    def sample(logits, poisson_log_rates, num_samples, max_items=None):
+        B, D = logits.size()
+        if max_items is None:
+            max_items = D
 
+        num_item_dist = Categorical(logits=truncated_poisson_log_pmf(poisson_log_rates.exp(), 0, max_items))
+        # num_samples x B
+        num_items = num_item_dist.sample((num_samples,)) + 1
+
+        item_dist = Gumbel(loc=logits, scale=1.0)
+        # num_samples x B
+        item_scores = item_dist.sample((num_samples,))
+
+        items = torch.full((num_samples, B, max_items), SetDistribution.PAD, dtype=torch.long)
+        for samp_ix in range(num_samples):
+            for b in range(B):
+                this_num_items = num_items[samp_ix, b]
+                items[samp_ix,b][:this_num_items] = item_scores[samp_ix,b].topk(this_num_items).indices
+        return items, num_items
 
 N = 5
-D = 15
+D = 100
+n_samples = 200
 
 log_X = torch.randn(N,D).log_softmax(-1)
 X = log_X.exp()
 
-H_no_rates = powerset_entropy(log_X)
+#H_no_rates = powerset_entropy(log_X)
 H_dp_no_rates = powerset_entropy_dp(log_X)
 
-assert torch.allclose(H_no_rates, H_dp_no_rates, atol=1e-3)
+#assert torch.allclose(H_no_rates, H_dp_no_rates, atol=1e-3)
 
-rates = torch.full((N, 1), 1.0)
+log_rates = torch.randn(N)
 
-H = powerset_entropy(log_X, rates)
-H_dp = powerset_entropy_dp(log_X, rates)
+#H = powerset_entropy(log_X, log_rates.exp())
+H_dp = SetDistribution.entropy(log_X, log_rates.exp())
 
-assert torch.allclose(H, H_dp, atol=1e-3)
+#assert torch.allclose(H, H_dp, atol=1e-3)
+
+items, num_items = SetDistribution.sample(log_X, log_rates.exp(), n_samples)
