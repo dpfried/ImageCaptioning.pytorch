@@ -86,8 +86,12 @@ def train(opt):
     del opt.vocab
     # Load pretrained weights:
     if opt.start_from is not None and os.path.isfile(os.path.join(opt.start_from, 'model.pth')):
-        model.load_state_dict(torch.load(os.path.join(opt.start_from, 'model.pth')))
-    
+        try:
+            model.load_state_dict(torch.load(os.path.join(opt.start_from, 'model.pth')))
+        except RuntimeError as e:
+            print(e)
+            model.load_state_dict(torch.load(os.path.join(opt.start_from, 'model.pth')), strict=False)
+
     # Wrap generation model with loss function(used for training)
     # This allows loss function computed separately on each machine
     lw_model = LossWrapper(model, opt)
@@ -111,7 +115,8 @@ def train(opt):
         optimizer = utils.build_optimizer(model.parameters(), opt)
     # Load the optimizer
     if opt.start_from is not None and os.path.isfile(os.path.join(opt.start_from,"optimizer.pth")):
-        optimizer.load_state_dict(torch.load(os.path.join(opt.start_from, 'optimizer.pth')))
+        if opt.load_optimizer:
+            optimizer.load_state_dict(torch.load(os.path.join(opt.start_from, 'optimizer.pth')))
 
     #########################
     # Get ready to start

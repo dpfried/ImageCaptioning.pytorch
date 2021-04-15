@@ -26,7 +26,6 @@ from torch.nn.utils.rnn import PackedSequence, pack_padded_sequence, pad_packed_
 import einops
 
 from .CaptionModel import CaptionModel
-from ..data.dataloader import NearestNeighborIndex
 from ..modules.distractor_scorer import DistractorScorer
 
 bad_endings = ['a','an','the','in','for','at','of','with','before','after','on','upon','near','to','is','are','am']
@@ -116,11 +115,15 @@ class AttModel(CaptionModel):
         else:
             self.distractor_scorer = None
 
-    def distractor_log_probs(self, fc_feats_target, fc_feats_distr):
+    def distractor_log_probs(self, fc_feats_target, fc_feats_distr, att_feats_target, att_feats_distr, att_masks_target, att_mask_distr):
         # fc_feats_target: batch_size x 1 x d
         # fc_feats_distr: batch_size x 1 x d
         if hasattr(self, 'distractor_scorer') and self.distractor_scorer is not None:
-            distractor_log_probs = self.distractor_scorer(fc_feats_target, fc_feats_distr)
+            distractor_log_probs = self.distractor_scorer(
+                fc_feats_target, fc_feats_distr,
+                att_feats_target, att_feats_distr,
+                att_masks_target, att_mask_distr
+            )
         else:
             # log p(i' | i) for target image i and distractor i'
             batch_size, _, num_distractors = fc_feats_distr.size()
@@ -350,7 +353,9 @@ class AttModel(CaptionModel):
 
     def _sample_contrastive_beam(
         self, fc_feats, att_feats, att_masks=None, opt={}, data=None, nearest_neighbor_index=None, loader=None,
+        distractor_selection_method='max',
     ):
+        print("contrastive_beam")
         assert nearest_neighbor_index is not None
         beam_size = opt.get('beam_size', 10)
         sample_n = opt.get('sample_n', 10)
@@ -391,13 +396,23 @@ class AttModel(CaptionModel):
             att_feats_target, att_feats_distr = att_feats.split((1, candidate_distractors), dim=1)
             if att_masks is not None:
                 att_masks_target, att_masks_distr = att_masks.split((1, candidate_distractors), dim=1)
+            else:
+                att_masks_target = att_masks_distr = None
 
             num_distractors = opt['pragmatic_distractors_to_choose']
 
             # log p(i' | i) for target image i and distractor i'
             # batch_size x candidate_distractors
-            self.dlp = distractor_log_probs = self.distractor_log_probs(fc_feats_target, fc_feats_distr)
-            distractor_lps, distractor_indices = distractor_log_probs.topk(num_distractors, dim=-1)
+            self.dlp = distractor_log_probs = self.distractor_log_probs(
+                fc_feats_target, fc_feats_distr,
+                att_feats_target, att_feats_distr,
+                att_masks_target, att_masks_distr,
+            )
+            if distractor_selection_method == 'max':
+                distractor_lps, distractor_indices = distractor_log_probs.topk(num_distractors, dim=-1)
+            elif distractor_selection_method == 'min':
+                distractor_lps, distractor_indices = (-distractor_log_probs).topk(num_distractors, dim=-1)
+                distractor_lps = -distractor_lps
 
             distractor_infos = []
             for b in range(batch_size):

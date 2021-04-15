@@ -72,6 +72,7 @@ class LossWrapper(torch.nn.Module):
 
             fc_feats_target, fc_feats_distr = fc_feats.split((1, num_distractors), dim=1)
             att_feats_target, att_feats_distr = att_feats.split((1, num_distractors), dim=1)
+            att_feats_distr = att_feats_distr.contiguous()
             att_masks_target, att_masks_distr = att_masks.split((1, num_distractors), dim=1)
 
             labels_from_target = labels[:,0]
@@ -140,7 +141,11 @@ class LossWrapper(torch.nn.Module):
             # TODO: a model that incorporates object features too
             # log p(i' | i) for target image i and distractor i'
             # batch_size x n_distractors
-            distractor_log_probs = self.model.distractor_log_probs(fc_feats_target, fc_feats_distr)
+            distractor_log_probs = self.model.distractor_log_probs(
+                fc_feats_target, fc_feats_distr,
+                att_feats_target, att_feats_distr,
+                att_masks_target, att_masks_distr,
+            )
 
             # log p(c, i' | i))
             # batch_size x n_distractors x num_captions
