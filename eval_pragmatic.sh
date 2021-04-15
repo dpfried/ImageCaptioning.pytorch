@@ -22,9 +22,11 @@ shift 3;
 
 distractor_split="train"
 
-candidate_gen="bs"
+candidate_gen="gumbel_bs"
+temperature=0.25
 
-id="pragmatic_${split}_cand-${candidate_gen}-${n_candidates}_s0-weight-${s0_weight}"
+#id="pragmatic_${split}_cand-${candidate_gen}-${temperature}-${n_candidates}_s0-weight-${s0_weight}"
+id="pragmatic_${split}_cand-${candidate_gen}-tokenonly-${temperature}-${n_candidates}_s0-weight-${s0_weight}"
 
 python -u tools/eval.py \
 	--id $id \
@@ -44,4 +46,6 @@ python -u tools/eval.py \
 	--pragmatic_s0_weight $s0_weight \
 	--sample_n_method $candidate_gen \
 	--sample_n $n_candidates \
+  --temperature $temperature \
+  $@ \
   | tee expts/${id}

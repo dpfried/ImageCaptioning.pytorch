@@ -196,6 +196,7 @@ def parse_opt():
     # contrastive loss
     parser.add_argument('--contrastive_after', type=int, default=-1)
     parser.add_argument('--contrastive_em', choices=['soft', 'hard'], default='hard')
+    parser.add_argument('--contrastive_type', choices=['incremental', 'global'], default='incremental')
 
     # Used for self critical
     parser.add_argument('--sc_sample_method', type=str, default='greedy',

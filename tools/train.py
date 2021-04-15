@@ -176,9 +176,9 @@ def train(opt):
                     struc_flag = False
 
                 if opt.contrastive_after != -1 and epoch >= opt.contrastive_after:
-                    contrastive_flag = True
+                    contrastive_type = opt.contrastive_type
                 else:
-                    contrastive_flag = False
+                    contrastive_type = None
 
                 if opt.contrastive_after != -1 and epoch == opt.contrastive_after - 1:
                     force_save_this_epoch = True
@@ -196,7 +196,7 @@ def train(opt):
             torch.cuda.synchronize()
             start = time.time()
 
-            if contrastive_flag:
+            if contrastive_type is not None:
                 ixs = [d['ix'] for d in data['infos']]
                 neighbor_data = loader.indices['train'].get_neighbor_batch(
                     loader, data['fc_feats'].cpu().numpy(), opt.pragmatic_distractors,
@@ -215,7 +215,7 @@ def train(opt):
             optimizer.zero_grad()
             model_out = dp_lw_model(fc_feats, att_feats, labels, masks, att_masks,
                                     data_to_use['gts'], torch.arange(0, len(data_to_use['gts'])),
-                                    sc_flag, struc_flag, contrastive_flag)
+                                    sc_flag, struc_flag, contrastive_type=contrastive_type)
 
             loss = model_out['loss'].mean()
 
